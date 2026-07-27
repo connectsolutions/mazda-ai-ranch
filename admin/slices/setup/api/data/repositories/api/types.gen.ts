@@ -132,7 +132,7 @@ export type RegisterDto = {
 };
 
 /**
- * Server filters Owner/Admin out regardless of what is passed; embed keys cannot grant platform-admin to a visitor.
+ * Server filters Owner/Admin out unless the presenting API key carries the embed:mint-admin scope; plain embed keys cannot grant platform-admin to a visitor.
  */
 export enum UserRoleTypes {
   OWNER = "Owner",
@@ -148,7 +148,7 @@ export type EmbedTokenDto = {
   sub: string;
   email?: string;
   /**
-   * Server filters Owner/Admin out regardless of what is passed; embed keys cannot grant platform-admin to a visitor.
+   * Server filters Owner/Admin out unless the presenting API key carries the embed:mint-admin scope; plain embed keys cannot grant platform-admin to a visitor.
    */
   roles?: Array<UserRoleTypes>;
   /**
@@ -159,6 +159,7 @@ export type EmbedTokenDto = {
 
 export enum ApiKeyScopeTypes {
   "EMBED:MINT" = "embed:mint",
+  "EMBED:MINT_ADMIN" = "embed:mint-admin",
   ADMIN = "admin",
 }
 
@@ -238,6 +239,14 @@ export type AddFromSitemapDto = {
 export type AddFromSitemapResultDto = {
   added: number;
   discovered: number;
+};
+
+export type AddFromArchiveResultDto = {
+  /**
+   * Number of ingestable files detected in the archive. Import runs in the background; refresh the sources list to watch them appear.
+   */
+  detected: number;
+  started: boolean;
 };
 
 export type AgentPodStatusDto = {
@@ -416,6 +425,13 @@ export type SaveFileDto = {
   content: string;
 };
 
+export type DeleteFilesDto = {
+  /**
+   * Number of S3 objects deleted by this request.
+   */
+  deleted: number;
+};
+
 export type BridleTextPartDto = {
   type: "text" | "image" | "file";
   text: string;
@@ -556,6 +572,122 @@ export type UpdateSkillDto = {
   description?: string;
 };
 
+export type ChatSessionDto = {
+  id: string;
+  agentId: string;
+  channel: "bridle" | "telegram" | "slack" | "internal";
+  externalUserId: string;
+  sessionKey: string;
+  title?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * Last message text, truncated
+   */
+  preview?: {
+    [key: string]: unknown;
+  } | null;
+  lastRole?: "user" | "assistant";
+  /**
+   * Unix ms via ISO
+   */
+  lastMessageAt: string;
+  /**
+   * Monotonic lifetime total
+   */
+  messageCount: number;
+  userMessageCount: number;
+  summary?: {
+    [key: string]: unknown;
+  } | null;
+  summaryAt?: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * topics/sentiment/resolved/language
+   */
+  insights?: {
+    [key: string]: unknown;
+  } | null;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChatListResponseDto = {
+  items: Array<ChatSessionDto>;
+  total: number;
+  page: number;
+  perPage: number;
+};
+
+export type ChatMessageDto = {
+  id: string;
+  role:
+    | "user"
+    | "assistant"
+    | "summary"
+    | "tool_call"
+    | "tool_result"
+    | "system";
+  text: string;
+  /**
+   * Unix epoch ms
+   */
+  ts: number;
+};
+
+export type ChatMessagesResponseDto = {
+  messages: Array<ChatMessageDto>;
+  /**
+   * Pass to fetch the previous (older) page
+   */
+  nextCursor?: {
+    [key: string]: unknown;
+  } | null;
+  hasMore: boolean;
+};
+
+export type SyncChatsDto = {
+  /**
+   * Reconcile only this agent; omit for all agents
+   */
+  agentId?: string;
+};
+
+export type SyncChatsResponseDto = {
+  scannedAgents: number;
+  scannedFiles: number;
+  upserted: number;
+  skipped: number;
+};
+
+export type CreateChatFeedbackDto = {
+  /**
+   * Event.id of the rated assistant message
+   */
+  messageId: string;
+  /**
+   * 1 = 👍, -1 = 👎
+   */
+  rating: 1 | -1;
+  comment?: string;
+};
+
+export type ChatFeedbackDto = {
+  id: string;
+  messageId: string;
+  rating: 1 | -1;
+  comment?: {
+    [key: string]: unknown;
+  } | null;
+  source: string;
+  authorId?: {
+    [key: string]: unknown;
+  } | null;
+  createdAt: string;
+};
+
 export type TelegramChannelConfigDto = {
   /**
    * Telegram bot HTTP API token (issued by @BotFather).
@@ -586,11 +718,16 @@ export type SetAgentChannelsDto = {
   channels: Array<AgentChannelDto>;
 };
 
+export enum AssignableUserRoleTypes {
+  ADMIN = "Admin",
+  USER = "User",
+}
+
 export type CreateUserDto = {
   name: string;
   email: string;
   password: string;
-  roles?: Array<UserRoleTypes>;
+  role?: AssignableUserRoleTypes;
 };
 
 export type UpdateUserDto = {
@@ -600,8 +737,8 @@ export type UpdateUserDto = {
   status?: "active" | "invited" | "disabled";
 };
 
-export type UpdateUserRolesDto = {
-  roles: Array<UserRoleTypes>;
+export type UpdateUserRoleDto = {
+  role: AssignableUserRoleTypes;
 };
 
 export type SaveTemplateFileDto = {
@@ -1751,6 +1888,22 @@ export type AddKnowledgeSourcesFromSitemapResponses = {
 export type AddKnowledgeSourcesFromSitemapResponse =
   AddKnowledgeSourcesFromSitemapResponses[keyof AddKnowledgeSourcesFromSitemapResponses];
 
+export type AddKnowledgeSourcesFromArchiveData = {
+  body?: never;
+  path: {
+    knowledgeId: string;
+  };
+  query?: never;
+  url: "/knowledges/{knowledgeId}/sources/from-archive";
+};
+
+export type AddKnowledgeSourcesFromArchiveResponses = {
+  201: AddFromArchiveResultDto;
+};
+
+export type AddKnowledgeSourcesFromArchiveResponse =
+  AddKnowledgeSourcesFromArchiveResponses[keyof AddKnowledgeSourcesFromArchiveResponses];
+
 export type DeleteKnowledgeSourceData = {
   body?: never;
   path: {
@@ -2016,6 +2169,28 @@ export type FileControllerListData = {
 export type FileControllerListResponses = {
   200: unknown;
 };
+
+export type FileControllerDeleteData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query: {
+    path: string;
+    /**
+     * When true, `path` is treated as a folder and every file under it is deleted.
+     */
+    recursive?: boolean;
+  };
+  url: "/agents/{agentId}/files/content";
+};
+
+export type FileControllerDeleteResponses = {
+  200: DeleteFilesDto;
+};
+
+export type FileControllerDeleteResponse =
+  FileControllerDeleteResponses[keyof FileControllerDeleteResponses];
 
 export type FileControllerReadData = {
   body?: never;
@@ -2339,6 +2514,318 @@ export type FindDependentAgentsResponses = {
   200: unknown;
 };
 
+export type GetChatsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Restrict to one agent
+     */
+    agentId?: string;
+    channel?: "bridle" | "telegram" | "slack" | "internal";
+    /**
+     * Matches title / preview / externalUserId
+     */
+    search?: string;
+    /**
+     * Show archived sessions
+     */
+    archived?: boolean;
+    /**
+     * Include internal (cron/heartbeat) sessions
+     */
+    includeInternal?: boolean;
+    page?: number;
+    perPage?: number;
+  };
+  url: "/chats";
+};
+
+export type GetChatsResponses = {
+  200: ChatListResponseDto;
+};
+
+export type GetChatsResponse = GetChatsResponses[keyof GetChatsResponses];
+
+export type GetChatData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/chats/{id}";
+};
+
+export type GetChatResponses = {
+  200: ChatSessionDto;
+};
+
+export type GetChatResponse = GetChatResponses[keyof GetChatResponses];
+
+export type GetChatMessagesData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: {
+    limit?: number;
+    /**
+     * Opaque cursor from a previous page
+     */
+    cursor?: string;
+    /**
+     * Comma-separated event types (debug toggle). Default user,assistant,summary. Admins may add tool_call,tool_result,system.
+     */
+    types?: string;
+  };
+  url: "/chats/{id}/messages";
+};
+
+export type GetChatMessagesResponses = {
+  200: ChatMessagesResponseDto;
+};
+
+export type GetChatMessagesResponse =
+  GetChatMessagesResponses[keyof GetChatMessagesResponses];
+
+export type SyncChatsData = {
+  body: SyncChatsDto;
+  path?: never;
+  query?: never;
+  url: "/chats/sync";
+};
+
+export type SyncChatsResponses = {
+  200: SyncChatsResponseDto;
+};
+
+export type SyncChatsResponse = SyncChatsResponses[keyof SyncChatsResponses];
+
+export type SummarizeChatData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/chats/{id}/summarize";
+};
+
+export type SummarizeChatResponses = {
+  200: ChatSessionDto;
+};
+
+export type SummarizeChatResponse =
+  SummarizeChatResponses[keyof SummarizeChatResponses];
+
+export type GetMyChatFeedbackData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/chats/{id}/feedback";
+};
+
+export type GetMyChatFeedbackResponses = {
+  200: Array<ChatFeedbackDto>;
+};
+
+export type GetMyChatFeedbackResponse =
+  GetMyChatFeedbackResponses[keyof GetMyChatFeedbackResponses];
+
+export type CreateChatFeedbackData = {
+  body: CreateChatFeedbackDto;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/chats/{id}/feedback";
+};
+
+export type CreateChatFeedbackResponses = {
+  200: ChatFeedbackDto;
+};
+
+export type CreateChatFeedbackResponse =
+  CreateChatFeedbackResponses[keyof CreateChatFeedbackResponses];
+
+export type DeleteChatFeedbackData = {
+  body?: never;
+  path: {
+    id: string;
+    messageId: string;
+  };
+  query?: never;
+  url: "/chats/{id}/feedback/{messageId}";
+};
+
+export type DeleteChatFeedbackResponses = {
+  204: void;
+};
+
+export type DeleteChatFeedbackResponse =
+  DeleteChatFeedbackResponses[keyof DeleteChatFeedbackResponses];
+
+export type ExportChatData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: {
+    /**
+     * Download format. json = raw messages, markdown/csv = transcript.
+     */
+    format?: "json" | "markdown" | "csv";
+  };
+  url: "/chats/{id}/export";
+};
+
+export type ExportChatResponses = {
+  200: unknown;
+};
+
+export type GetMyChatsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    /**
+     * Include archived chats
+     */
+    archived?: boolean;
+    page?: number;
+    perPage?: number;
+  };
+  url: "/me/chats";
+};
+
+export type GetMyChatsResponses = {
+  200: ChatListResponseDto;
+};
+
+export type GetMyChatsResponse = GetMyChatsResponses[keyof GetMyChatsResponses];
+
+export type GetMyChatData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/me/chats/{id}";
+};
+
+export type GetMyChatResponses = {
+  200: ChatSessionDto;
+};
+
+export type GetMyChatResponse = GetMyChatResponses[keyof GetMyChatResponses];
+
+export type GetMyChatMessagesData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: {
+    limit?: number;
+    /**
+     * Opaque cursor from a previous page
+     */
+    cursor?: string;
+    /**
+     * Comma-separated event types (debug toggle). Default user,assistant,summary. Admins may add tool_call,tool_result,system.
+     */
+    types?: string;
+  };
+  url: "/me/chats/{id}/messages";
+};
+
+export type GetMyChatMessagesResponses = {
+  200: ChatMessagesResponseDto;
+};
+
+export type GetMyChatMessagesResponse =
+  GetMyChatMessagesResponses[keyof GetMyChatMessagesResponses];
+
+export type SyncMyChatsData = {
+  body: SyncChatsDto;
+  path?: never;
+  query?: never;
+  url: "/me/chats/sync";
+};
+
+export type SyncMyChatsResponses = {
+  200: SyncChatsResponseDto;
+};
+
+export type SyncMyChatsResponse =
+  SyncMyChatsResponses[keyof SyncMyChatsResponses];
+
+export type ListMyChatFeedbackData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/me/chats/{id}/feedback";
+};
+
+export type ListMyChatFeedbackResponses = {
+  200: Array<ChatFeedbackDto>;
+};
+
+export type ListMyChatFeedbackResponse =
+  ListMyChatFeedbackResponses[keyof ListMyChatFeedbackResponses];
+
+export type CreateMyChatFeedbackData = {
+  body: CreateChatFeedbackDto;
+  path: {
+    id: string;
+  };
+  query?: never;
+  url: "/me/chats/{id}/feedback";
+};
+
+export type CreateMyChatFeedbackResponses = {
+  200: ChatFeedbackDto;
+};
+
+export type CreateMyChatFeedbackResponse =
+  CreateMyChatFeedbackResponses[keyof CreateMyChatFeedbackResponses];
+
+export type DeleteMyChatFeedbackData = {
+  body?: never;
+  path: {
+    id: string;
+    messageId: string;
+  };
+  query?: never;
+  url: "/me/chats/{id}/feedback/{messageId}";
+};
+
+export type DeleteMyChatFeedbackResponses = {
+  204: void;
+};
+
+export type DeleteMyChatFeedbackResponse =
+  DeleteMyChatFeedbackResponses[keyof DeleteMyChatFeedbackResponses];
+
+export type ExportMyChatData = {
+  body?: never;
+  path: {
+    id: string;
+  };
+  query?: {
+    /**
+     * Download format. json = raw messages, markdown/csv = transcript.
+     */
+    format?: "json" | "markdown" | "csv";
+  };
+  url: "/me/chats/{id}/export";
+};
+
+export type ExportMyChatResponses = {
+  200: unknown;
+};
+
 export type GetAgentChannelsData = {
   body?: never;
   path: {
@@ -2432,16 +2919,16 @@ export type UserControllerUpdateResponses = {
   200: unknown;
 };
 
-export type UserControllerUpdateRolesData = {
-  body: UpdateUserRolesDto;
+export type UserControllerUpdateRoleData = {
+  body: UpdateUserRoleDto;
   path: {
     id: string;
   };
   query?: never;
-  url: "/users/{id}/roles";
+  url: "/users/{id}/role";
 };
 
-export type UserControllerUpdateRolesResponses = {
+export type UserControllerUpdateRoleResponses = {
   200: unknown;
 };
 

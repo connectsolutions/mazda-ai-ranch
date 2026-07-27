@@ -19,13 +19,17 @@ import {
   RegisterDto,
 } from './dtos';
 import { UserDto } from '../user/dtos';
-import { ApiKeyScopeTypes } from '../apiKey/domain';
+import { ApiKeyScopeTypes, IApiKeyData } from '../apiKey/domain';
+import { ApiKeyService } from '../apiKey/domain/apiKey.service';
 import { ApiKeyGuard, JwtAuthGuard, Scopes, ScopesGuard } from './guards';
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private apiKeys: ApiKeyService,
+  ) {}
 
   @Post('login')
   @HttpCode(200)
@@ -61,14 +65,22 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Mint a short-lived browser embed JWT for the bridle widget. Auth: API key with embed:mint scope. Owner/Admin roles are stripped from the result regardless of input.',
+      'Mint a short-lived browser embed JWT for the bridle widget. Auth: API key with embed:mint scope. Owner/Admin roles are stripped from the result unless the key also carries embed:mint-admin — then they are kept and the TTL is capped at 7d.',
   })
-  embedToken(@Body() dto: EmbedTokenDto): Promise<EmbedTokenResultDto> {
+  embedToken(
+    @Req() req: Request & { apiKey: IApiKeyData },
+    @Body() dto: EmbedTokenDto,
+  ): Promise<EmbedTokenResultDto> {
     return this.authService.mintEmbedToken({
       sub: dto.sub,
       email: dto.email,
       roles: dto.roles,
       expiresIn: dto.expiresIn,
+      allowAdminRoles: this.apiKeys.hasScope(
+        req.apiKey,
+        ApiKeyScopeTypes.EmbedMintAdmin,
+      ),
     });
   }
+
 }

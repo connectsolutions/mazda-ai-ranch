@@ -1,0 +1,122 @@
+<script setup lang="ts">
+import { UserStatusTypes, UserRoleTypes, type IUserData } from '#user/domain/user.types';
+import { pages } from '#user/pages';
+
+const userStore = useUserStore();
+
+const { data: users, pending, refresh } = await useAsyncData(
+  'admin-users',
+  () => userStore.fetchAll(),
+);
+
+const statusVariant: Record<UserStatusTypes, 'default' | 'secondary' | 'outline' | 'destructive'> = {
+  [UserStatusTypes.Active]: 'default',
+  [UserStatusTypes.Invited]: 'secondary',
+  [UserStatusTypes.Disabled]: 'outline',
+};
+
+const pendingRemoval = ref<IUserData | null>(null);
+const confirmRemoveOpen = computed({
+  get: () => pendingRemoval.value !== null,
+  set: (v: boolean) => {
+    if (!v) pendingRemoval.value = null;
+  },
+});
+
+async function onRemove() {
+  const user = pendingRemoval.value;
+  if (!user) return;
+  pendingRemoval.value = null;
+  await userStore.remove(user.id);
+  await refresh();
+}
+</script>
+
+<template>
+  <div class="flex flex-col gap-6">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold">Users</h1>
+        <p class="text-sm text-muted-foreground">People with access to this workspace.</p>
+      </div>
+      <Button as-child>
+        <NuxtLink :to="pages.userCreate">Create user</NuxtLink>
+      </Button>
+    </div>
+
+    <div v-if="pending" class="text-sm text-muted-foreground">Loading users…</div>
+
+    <div v-else-if="users?.length" class="rounded-md border bg-card">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Name</TableHead>
+            <TableHead>Role</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead class="text-right">Joined</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow
+            v-for="user in users"
+            :key="user.id"
+            class="cursor-pointer"
+            @click="navigateTo(pages.user.replace(':id', user.id))"
+          >
+            <TableCell>
+              <div class="flex items-center gap-3">
+                <Avatar class="size-8">
+                  <AvatarFallback>{{ user.initials }}</AvatarFallback>
+                </Avatar>
+                <div>
+                  <div class="font-medium">{{ user.name }}</div>
+                  <div class="text-xs text-muted-foreground">{{ user.email }}</div>
+                </div>
+              </div>
+            </TableCell>
+            <TableCell>
+              <Badge variant="secondary">{{ user.role }}</Badge>
+            </TableCell>
+            <TableCell>
+              <Badge :variant="statusVariant[user.status]" class="capitalize">
+                {{ user.status }}
+              </Badge>
+            </TableCell>
+            <TableCell>
+              <DateTimeAgo :date="user.createdAt" />
+            </TableCell>
+            <TableCell @click.stop>
+              <div class="flex justify-end gap-2">
+                <Button size="sm" variant="outline"
+                @click="navigateTo(pages.userEdit.replace(':id', user.id))"
+                >Edit</Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="text-destructive"
+                  :disabled="user.role === UserRoleTypes.Owner"
+                  @click="pendingRemoval = user"
+                >
+                  Remove
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </div>
+
+    <div v-else class="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">
+      No users.
+    </div>
+
+    <ConfirmDialog
+      v-model:open="confirmRemoveOpen"
+      title="Remove user"
+      :description="pendingRemoval ? `Permanently remove ${pendingRemoval.name} (${pendingRemoval.email})? They will lose all access immediately.` : ''"
+      confirm-label="Remove user"
+      @confirm="onRemove"
+    />
+  </div>
+</template>
