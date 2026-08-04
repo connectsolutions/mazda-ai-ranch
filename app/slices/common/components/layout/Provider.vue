@@ -21,6 +21,14 @@
           >
             Agents
           </NuxtLink>
+          <NuxtLink
+            v-if="authStore.isAuthenticated"
+            to="/chats"
+            class="text-muted-foreground hover:text-foreground transition-colors"
+            active-class="text-foreground font-medium"
+          >
+            History
+          </NuxtLink>
         </nav>
 
         <div class="flex-1" />
@@ -30,11 +38,10 @@
             {{ authStore.user?.name ?? authStore.user?.email }}
           </span>
           <span
-            v-for="role in authStore.roles"
-            :key="role"
+            v-if="authStore.role"
             class="hidden sm:inline rounded bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
           >
-            {{ role }}
+            {{ authStore.role }}
           </span>
           <button
             type="button"
@@ -60,10 +67,18 @@
     </header>
 
     <main class="flex-1 min-h-0 flex flex-col">
-      <div v-if="!isFlush" class="container mx-auto px-4 py-6 w-full">
-        <slot />
-      </div>
-      <div v-else class="flex-1 min-h-0 flex flex-col">
+      <!-- Single slot with a toggled wrapper class. Splitting this into
+           v-if/v-else branches (each with its own <slot/>) tears down and
+           recreates the page subtree whenever `isFlush` flips — i.e. on every
+           navigation into/out of /agents/:id — which remounts the page and
+           re-fires all its useAsyncData requests. One element = no remount. -->
+      <div
+        :class="
+          isFlush
+            ? 'flex-1 min-h-0 flex flex-col'
+            : 'container mx-auto px-4 py-6 w-full'
+        "
+      >
         <slot />
       </div>
     </main>

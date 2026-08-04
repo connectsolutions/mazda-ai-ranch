@@ -299,6 +299,10 @@ async function copy(key: string, value: string) {
           passing a token-getter to the SDK
           (<code class="font-mono">token: () =&gt; fetchJwt()</code>) instead
           of pinning a long-lived JWT in the page.
+          With an <code class="font-mono">embed:mint-admin</code> scoped key the
+          same call may pass <code class="font-mono">"roles":["Owner"]</code> to
+          mint <em>admin</em> tokens (TTL capped at 7d) — pair it with a
+          token-getter for a permanent admin embed on a private page.
         </p>
       </div>
 
