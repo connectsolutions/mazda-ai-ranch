@@ -23,7 +23,6 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { SourceService } from './domain/source.service';
-import { TestMarkerInterceptor } from './testMarker.interceptor';
 import { UploadLimitInterceptor } from './uploadLimit.interceptor';
 import {
   AddFilesResultDto,
@@ -56,9 +55,6 @@ interface UploadedFileLike {
 
 @ApiTags('knowledge-sources')
 @Controller('knowledges/:knowledgeId/sources')
-// TEMPORARY: tags this controller's errors so a deploy can be verified from
-// the response alone. Drop together with testMarker.interceptor.ts.
-@UseInterceptors(TestMarkerInterceptor)
 export class SourceController {
   constructor(private readonly service: SourceService) {}
 
