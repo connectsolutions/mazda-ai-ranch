@@ -13,6 +13,9 @@ import {
   ILightragGraph,
   ILightragGraphNode,
   ILightragGraphEdge,
+  ITrackStatus,
+  IDocumentProcessingStatus,
+  DocumentProcessingStatusTypes,
   LightragClientError,
 } from '../domain/lightrag.types';
 
@@ -197,10 +200,21 @@ export class LightragHttpClient extends ILightragClient {
     await this.ensureOk(res, '/documents/delete_document');
   }
 
-  private async resolveDocIdsByTrackId(
+  /**
+   * Ingest only enqueues, so the track id it returns says nothing about
+   * whether the document is searchable yet. This reports where the pipeline
+   * actually got to. An unknown track id (404) yields no documents, which
+   * callers read as "LightRAG has nothing under this id".
+   */
+  async getTrackStatus(trackId: string): Promise<ITrackStatus> {
+    const cfg = await this.requireEnabled();
+    return this.fetchTrackStatus(cfg, trackId);
+  }
+
+  private async fetchTrackStatus(
     cfg: ResolvedRequestConfig,
     trackId: string,
-  ): Promise<string[]> {
+  ): Promise<ITrackStatus> {
     const res = await this.fetchImpl(
       `${cfg.baseUrl}/documents/track_status/${encodeURIComponent(trackId)}`,
       {
@@ -208,10 +222,18 @@ export class LightragHttpClient extends ILightragClient {
         headers: this.headers(cfg.apiKey),
       },
     );
-    if (res.status === 404) return [];
+    if (res.status === 404) return { documents: [] };
     await this.ensureOk(res, `/documents/track_status/${trackId}`);
     const body: unknown = await res.json();
-    return extractTrackStatusDocIds(body);
+    return extractTrackStatus(body);
+  }
+
+  private async resolveDocIdsByTrackId(
+    cfg: ResolvedRequestConfig,
+    trackId: string,
+  ): Promise<string[]> {
+    const status = await this.fetchTrackStatus(cfg, trackId);
+    return status.documents.map((d) => d.id);
   }
 
   async getGraphLabels(): Promise<string[]> {
@@ -331,17 +353,30 @@ function extractLabels(body: unknown): string[] {
   return body.filter((x): x is string => typeof x === 'string');
 }
 
-function extractTrackStatusDocIds(body: unknown): string[] {
-  if (!isRecord(body)) return [];
+function extractTrackStatus(body: unknown): ITrackStatus {
+  if (!isRecord(body)) return { documents: [] };
   const docs = body.documents;
-  if (!Array.isArray(docs)) return [];
-  const ids: string[] = [];
+  if (!Array.isArray(docs)) return { documents: [] };
+  const documents: IDocumentProcessingStatus[] = [];
   for (const doc of docs) {
-    if (isRecord(doc) && typeof doc.id === 'string') {
-      ids.push(doc.id);
-    }
+    if (!isRecord(doc) || typeof doc.id !== 'string') continue;
+    documents.push({
+      id: doc.id,
+      status: toProcessingStatus(doc.status),
+      errorMessage: typeof doc.error_msg === 'string' ? doc.error_msg : null,
+    });
   }
-  return ids;
+  return { documents };
+}
+
+function toProcessingStatus(value: unknown): DocumentProcessingStatusTypes {
+  if (value === 'processed' || value === 'failed' || value === 'pending') {
+    return value;
+  }
+  // Anything else - 'processing', or a state a newer LightRAG adds - counts as
+  // still in flight. Erring that way makes a poller wait rather than call a
+  // document searchable when it is not.
+  return 'processing';
 }
 
 function isString(value: unknown): value is string {

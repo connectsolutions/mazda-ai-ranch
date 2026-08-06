@@ -118,50 +118,39 @@ export class KnowledgeService {
   private async runIndex(knowledgeId: string): Promise<void> {
     try {
       const sources = await this.sources.findByKnowledge(knowledgeId);
-      const failures: { sourceId: string; name: string; error: string }[] = [];
-      const previouslyIndexed = sources.filter((s) => s.indexed).length;
-      let newlyIndexed = 0;
-      for (const source of sources) {
-        if (source.indexed) continue;
-        try {
-          await this.sources.indexSource(source);
-          newlyIndexed += 1;
-        } catch (err) {
-          // Per-source failures are isolated so one bad URL (404, empty
-          // body, etc.) does not strand the rest of the batch. The
-          // aggregate result is reported via indexError once the loop
-          // finishes.
-          const message = errorMessage(err);
-          failures.push({
-            sourceId: source.id,
-            name: source.name,
-            error: message,
-          });
-          this.logger.warn(
-            `indexSource failed for ${source.id} (${source.name}): ${message}`,
-          );
-        }
+      // Every source goes through the gateway on every run, including ones
+      // already marked indexed: the gateway re-checks them against LightRAG
+      // and re-ingests anything the pipeline never actually processed. That is
+      // what makes the Index button a real retry instead of a no-op.
+      const outcomes = await this.sources.indexSources(sources);
+
+      const failures = outcomes.filter((o) => !o.indexed);
+      for (const failure of failures) {
+        this.logger.warn(
+          `indexing failed for ${failure.sourceId} (${failure.name}): ${failure.error ?? 'unknown error'}`,
+        );
       }
+
       const summary =
         failures.length === 0
           ? null
           : `${failures.length} source(s) failed: ${failures
               .slice(0, 5)
-              .map((f) => `${f.name} (${f.error})`)
+              .map((f) => `${f.name} (${f.error ?? 'unknown error'})`)
               .join('; ')}${failures.length > 5 ? '; ...' : ''}`;
-      const totalIndexed = previouslyIndexed + newlyIndexed;
-      // 'ready' when at least one document is indexed OR the KB is empty
-      // (nothing to do is a trivially "ready" state). 'failed' only when
-      // there are sources but none ever indexed - so the UI doesn't claim
-      // a KB is queryable when it physically has zero documents.
+      const indexedCount = outcomes.length - failures.length;
+      // 'ready' means LightRAG confirmed at least one document as processed,
+      // or the base is empty (nothing to do is trivially ready). Accepting an
+      // upload is not enough: that is what used to show `ready` on a base with
+      // an empty graph that answered every query with no context.
       const status: IndexStatusTypes =
-        totalIndexed > 0 || sources.length === 0 ? 'ready' : 'failed';
+        indexedCount > 0 || sources.length === 0 ? 'ready' : 'failed';
       await this.gateway.updateIndexState(knowledgeId, {
         indexStatus: status,
-        // Bump indexedAt only when this run actually added something.
+        // Bump indexedAt only when something is actually searchable now.
         // Preserves the timestamp of the last successful run when the
         // current run failed everything but earlier runs had succeeded.
-        indexedAt: newlyIndexed > 0 ? new Date() : undefined,
+        indexedAt: indexedCount > 0 ? new Date() : undefined,
         indexError: summary,
       });
     } catch (err) {

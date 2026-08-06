@@ -10,11 +10,9 @@ import {
   IArchiveImportResult,
   IFilesImportResult,
   ISourceData,
+  ISourceIndexOutcome,
 } from './source.types';
-import {
-  fetchSitemapUrls,
-  SitemapError,
-} from '../data/sitemap.fetcher';
+import { fetchSitemapUrls, SitemapError } from '../data/sitemap.fetcher';
 import {
   ArchiveEntry,
   contentTypeForEntry,
@@ -256,12 +254,14 @@ export class SourceService {
     try {
       await fs.unlink(filePath);
     } catch (err) {
-      this.logger.warn(`failed to remove temp archive ${filePath}: ${errorMessage(err)}`);
+      this.logger.warn(
+        `failed to remove temp archive ${filePath}: ${errorMessage(err)}`,
+      );
     }
   }
 
-  indexSource(source: ISourceData): Promise<void> {
-    return this.gateway.indexSource(source);
+  indexSources(sources: ISourceData[]): Promise<ISourceIndexOutcome[]> {
+    return this.gateway.indexSources(sources);
   }
 
   /**

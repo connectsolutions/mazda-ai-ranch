@@ -17,8 +17,23 @@ import {
   IUploadSourceFileInput,
   IUploadSourceStreamInput,
   IUploadedSourceFile,
+  ISourceIndexOutcome,
 } from '../domain/source.types';
 import { SourceMapper } from './source.mapper';
+
+// LightRAG processes ingested documents in a background pipeline. These bound
+// how long one index run waits for that pipeline before giving up and marking
+// the remaining sources as not indexed (so the next run retries them).
+const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+const PROCESSING_POLL_INTERVAL_MS = 3000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 @Injectable()
 export class SourceGateway extends ISourceGateway {
@@ -170,13 +185,157 @@ export class SourceGateway extends ISourceGateway {
     await this.s3.delete(location);
   }
 
-  async indexSource(source: ISourceData): Promise<void> {
-    const workspace = workspaceOf(source.knowledgeId);
-    const docId = await this.ingestByType(source, workspace);
+  /**
+   * Ingest only enqueues: LightRAG hands back a track id and builds chunks,
+   * embeddings and the graph in a background pipeline afterwards. Storing that
+   * track id as proof of indexing is what let a knowledge base report `ready`
+   * while its graph stayed empty and every query came back without context.
+   *
+   * So submit everything first, then wait for the pipeline to reach a terminal
+   * state, and persist a doc id only for documents LightRAG reports as
+   * processed. Anything that fails or never finishes keeps `lightragDocId`
+   * null, which leaves `indexed` false so the next run retries it. Re-ingest
+   * is safe: LightRAG addresses documents by content hash, so resubmitting the
+   * same source converges on the same document instead of duplicating it.
+   */
+  async indexSources(sources: ISourceData[]): Promise<ISourceIndexOutcome[]> {
+    const outcomes = new Map<string, ISourceIndexOutcome>();
+    const inFlight = new Map<string, ISourceData>();
+
+    for (const source of sources) {
+      const settled = await this.settleAlreadyIndexed(source);
+      if (settled) {
+        outcomes.set(source.id, settled);
+        continue;
+      }
+      try {
+        const workspace = workspaceOf(source.knowledgeId);
+        const trackId = await this.ingestByType(source, workspace);
+        inFlight.set(trackId, source);
+      } catch (err) {
+        outcomes.set(source.id, this.failed(source, errorMessage(err)));
+      }
+    }
+
+    await this.awaitProcessing(inFlight, outcomes);
+
+    return sources.map(
+      (s) =>
+        outcomes.get(s.id) ??
+        this.failed(s, 'LightRAG reported no state for this document'),
+    );
+  }
+
+  private failed(source: ISourceData, error: string): ISourceIndexOutcome {
+    return { sourceId: source.id, name: source.name, indexed: false, error };
+  }
+
+  /**
+   * A source already carrying a doc id is only trusted if LightRAG still
+   * reports that document as processed. Otherwise the claim is dropped so the
+   * caller re-ingests. This is what unsticks bases indexed before the pipeline
+   * was actually checked: they look indexed but LightRAG has nothing.
+   */
+  private async settleAlreadyIndexed(
+    source: ISourceData,
+  ): Promise<ISourceIndexOutcome | null> {
+    if (!source.indexed) return null;
+
+    const record = await this.prisma.source.findUnique({
+      where: { id: source.id },
+      select: { lightragDocId: true },
+    });
+    const trackId = record?.lightragDocId ?? null;
+    if (trackId === null) return null;
+
+    try {
+      const status = await this.lightrag.getTrackStatus(trackId);
+      const processed =
+        status.documents.length > 0 &&
+        status.documents.every((d) => d.status === 'processed');
+      if (processed) {
+        return {
+          sourceId: source.id,
+          name: source.name,
+          indexed: true,
+          error: null,
+        };
+      }
+    } catch (err) {
+      // Cannot tell either way, so keep the existing claim and report the
+      // source as unverified for this run rather than re-ingesting blindly.
+      return this.failed(source, errorMessage(err));
+    }
+
     await this.prisma.source.update({
       where: { id: source.id },
-      data: { lightragDocId: docId },
+      data: { lightragDocId: null },
     });
+    return null;
+  }
+
+  private async awaitProcessing(
+    inFlight: Map<string, ISourceData>,
+    outcomes: Map<string, ISourceIndexOutcome>,
+  ): Promise<void> {
+    if (inFlight.size === 0) return;
+
+    const deadline = Date.now() + PROCESSING_TIMEOUT_MS;
+
+    while (inFlight.size > 0 && Date.now() < deadline) {
+      await sleep(PROCESSING_POLL_INTERVAL_MS);
+
+      for (const [trackId, source] of [...inFlight]) {
+        try {
+          const status = await this.lightrag.getTrackStatus(trackId);
+          if (status.documents.length === 0) continue;
+
+          const failure = status.documents.find((d) => d.status === 'failed');
+          if (failure) {
+            inFlight.delete(trackId);
+            outcomes.set(
+              source.id,
+              this.failed(
+                source,
+                failure.errorMessage ?? 'LightRAG failed to process it',
+              ),
+            );
+            continue;
+          }
+
+          if (status.documents.every((d) => d.status === 'processed')) {
+            inFlight.delete(trackId);
+            await this.prisma.source.update({
+              where: { id: source.id },
+              data: { lightragDocId: trackId },
+            });
+            outcomes.set(source.id, {
+              sourceId: source.id,
+              name: source.name,
+              indexed: true,
+              error: null,
+            });
+          }
+        } catch (err) {
+          // Transient read failure. Leave it in flight and retry next tick;
+          // the deadline is what stops an endlessly unreachable LightRAG.
+          this.logger.warn(
+            `track_status(${trackId}) failed: ${errorMessage(err)}`,
+          );
+        }
+      }
+    }
+
+    const timeoutSeconds = Math.round(PROCESSING_TIMEOUT_MS / 1000);
+    for (const source of inFlight.values()) {
+      outcomes.set(
+        source.id,
+        this.failed(
+          source,
+          `still processing after ${timeoutSeconds}s - will retry on the next index run`,
+        ),
+      );
+    }
   }
 
   async removeFromIndex(source: ISourceData): Promise<void> {

@@ -29,6 +29,25 @@ export interface IQueryInput {
   topK?: number;
 }
 
+// Ingest endpoints only enqueue: they return a track id and LightRAG builds
+// chunks, embeddings and the graph in a background pipeline afterwards. A
+// document is searchable only once it reaches 'processed'.
+export type DocumentProcessingStatusTypes =
+  | 'pending'
+  | 'processing'
+  | 'processed'
+  | 'failed';
+
+export interface IDocumentProcessingStatus {
+  id: string;
+  status: DocumentProcessingStatusTypes;
+  errorMessage: string | null;
+}
+
+export interface ITrackStatus {
+  documents: IDocumentProcessingStatus[];
+}
+
 export interface IQueryReference {
   referenceId: string;
   filePath: string;

@@ -4,6 +4,7 @@ import {
   IUploadSourceFileInput,
   IUploadSourceStreamInput,
   IUploadedSourceFile,
+  ISourceIndexOutcome,
 } from './source.types';
 
 export abstract class ISourceGateway {
@@ -21,7 +22,7 @@ export abstract class ISourceGateway {
   ): Promise<IUploadedSourceFile>;
   abstract deleteFile(url: string): Promise<void>;
 
-  abstract indexSource(source: ISourceData): Promise<void>;
+  abstract indexSources(sources: ISourceData[]): Promise<ISourceIndexOutcome[]>;
   abstract removeFromIndex(source: ISourceData): Promise<void>;
   abstract removeAllByKnowledge(knowledgeId: string): Promise<void>;
 }
