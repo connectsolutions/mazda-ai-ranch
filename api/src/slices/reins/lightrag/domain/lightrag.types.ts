@@ -29,6 +29,25 @@ export interface IQueryInput {
   topK?: number;
 }
 
+// Ingest endpoints only enqueue: they return a track id and LightRAG builds
+// chunks, embeddings and the graph in a background pipeline afterwards. A
+// document is searchable only once it reaches 'processed'.
+export type DocumentProcessingStatusTypes =
+  | 'pending'
+  | 'processing'
+  | 'processed'
+  | 'failed';
+
+export interface IDocumentProcessingStatus {
+  id: string;
+  status: DocumentProcessingStatusTypes;
+  errorMessage: string | null;
+}
+
+export interface ITrackStatus {
+  documents: IDocumentProcessingStatus[];
+}
+
 export interface IQueryReference {
   referenceId: string;
   filePath: string;
@@ -39,8 +58,23 @@ export interface IQueryResult {
   references: IQueryReference[];
 }
 
+/**
+ * What the LightRAG process is actually running, as reported by /health. Its
+ * bindings come from the container env and are resolved once at startup, so
+ * this is the only honest answer to "which embedding model is in use". Picking
+ * a credential in the admin expresses intent; this is the effect.
+ */
+export interface ILightragRuntimeConfig {
+  llmBinding: string | null;
+  llmModel: string | null;
+  embeddingBinding: string | null;
+  embeddingModel: string | null;
+  embeddingBindingHost: string | null;
+}
+
 export interface ILightragHealth {
   ok: boolean;
+  configuration: ILightragRuntimeConfig | null;
 }
 
 export interface IGetGraphInput {

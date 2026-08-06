@@ -23,6 +23,16 @@ export function normalizeCredential(raw: string): string {
   return v.trim();
 }
 
+// Providers with no embeddings endpoint at all. Anthropic ships chat models
+// only, and LightRAG has no `anthropic` embedding binding either, so a
+// credential flagged as embedding-capable here can never produce a vector -
+// it just leaves knowledge bases indexing into nothing.
+const PROVIDERS_WITHOUT_EMBEDDINGS = new Set(['anthropic', 'claude']);
+
+export function providerSupportsEmbeddings(provider: string): boolean {
+  return !PROVIDERS_WITHOUT_EMBEDDINGS.has(provider.trim().toLowerCase());
+}
+
 /**
  * Anthropic accepts two credential types over DIFFERENT transports — sending
  * one the other's way is a hard 401 (`invalid x-api-key`):

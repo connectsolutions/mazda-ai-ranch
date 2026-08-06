@@ -8,6 +8,7 @@ import {
   ILightragHealth,
   IGetGraphInput,
   ILightragGraph,
+  ITrackStatus,
 } from './lightrag.types';
 
 export abstract class ILightragClient {
@@ -16,6 +17,7 @@ export abstract class ILightragClient {
   abstract ingestUrl(input: IIngestUrlInput): Promise<IIngestResult>;
   abstract ingestFile(input: IIngestFileInput): Promise<IIngestResult>;
   abstract query(input: IQueryInput): Promise<IQueryResult>;
+  abstract getTrackStatus(trackId: string): Promise<ITrackStatus>;
   abstract deleteDocumentsByTrackIds(trackIds: string[]): Promise<void>;
   abstract getGraphLabels(): Promise<string[]>;
   abstract getGraph(input: IGetGraphInput): Promise<ILightragGraph>;

@@ -1,4 +1,8 @@
-import { anthropicAuthHeaders, normalizeCredential } from './llm.utils';
+import {
+  anthropicAuthHeaders,
+  normalizeCredential,
+  providerSupportsEmbeddings,
+} from './llm.utils';
 
 describe('anthropicAuthHeaders', () => {
   it('sends an OAuth subscription token as Bearer + claude-code beta (never x-api-key)', () => {
@@ -21,5 +25,24 @@ describe('normalizeCredential', () => {
     expect(normalizeCredential('LLM_API_KEY="sk-ant-oat01-x"')).toBe(
       'sk-ant-oat01-x',
     );
+  });
+});
+
+describe('providerSupportsEmbeddings', () => {
+  it('rejects Anthropic under either provider id', () => {
+    expect(providerSupportsEmbeddings('claude')).toBe(false);
+    expect(providerSupportsEmbeddings('anthropic')).toBe(false);
+  });
+
+  it('ignores case and surrounding whitespace', () => {
+    expect(providerSupportsEmbeddings('  Claude ')).toBe(false);
+  });
+
+  it('allows providers that do serve embeddings', () => {
+    expect(providerSupportsEmbeddings('openai')).toBe(true);
+  });
+
+  it('allows unknown providers rather than guessing', () => {
+    expect(providerSupportsEmbeddings('voyage')).toBe(true);
   });
 });

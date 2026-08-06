@@ -5,6 +5,7 @@ import {
   getProvider,
   getModel,
   isKnownProvider,
+  providerSupportsEmbeddings,
 } from '#llm/data/providers';
 import { Button } from '#theme/components/ui/button';
 import { Input } from '#theme/components/ui/input';
@@ -60,16 +61,24 @@ const modelOptions = computed(() => {
 });
 
 
+const embeddingPossible = computed<boolean>(() =>
+  providerSupportsEmbeddings(form.provider),
+);
+
 function onProviderChange(): void {
   form.model = '';
   form.fallbackModel = '';
+  // A provider without an embeddings API cannot carry the flag, including on
+  // a custom model id where the catalogue has nothing to derive from. This is
+  // the gap that let a Claude credential be picked as the embedding model.
+  if (!embeddingPossible.value) form.supportsEmbedding = false;
 }
 
 function onModelChange(): void {
   const def = getModel(form.provider, form.model);
   if (def === null) return;
   form.supportsChat = def.capabilities.chat;
-  form.supportsEmbedding = def.capabilities.embedding;
+  form.supportsEmbedding = def.capabilities.embedding && embeddingPossible.value;
 }
 
 function validate(): boolean {
@@ -196,6 +205,7 @@ function onSubmit(): void {
             <Checkbox
               id="cap-embedding"
               :model-value="form.supportsEmbedding"
+              :disabled="!embeddingPossible"
               @update:model-value="
                 (v: boolean | 'indeterminate') =>
                   (form.supportsEmbedding = v === true)
@@ -205,6 +215,11 @@ function onSubmit(): void {
           </label>
           <p v-if="errors.capabilities" class="text-xs text-destructive">
             {{ errors.capabilities }}
+          </p>
+          <p v-if="!embeddingPossible" class="text-xs text-muted-foreground">
+            This provider has no embeddings API, so the flag cannot be set.
+            Knowledge needs a provider that returns vectors, e.g. OpenAI
+            text-embedding-3-small.
           </p>
           <p class="text-xs text-muted-foreground">
             Picking a model from the dropdown auto-fills these flags from the

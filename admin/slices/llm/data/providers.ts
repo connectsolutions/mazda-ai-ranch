@@ -60,6 +60,17 @@ export const PROVIDERS: IProviderDef[] = [
   },
 ];
 
+// Providers with no embeddings endpoint at all. Kept in sync with the same
+// guard on the api (llm.utils.ts), which is the authoritative check. Anthropic
+// ships chat models only, so a credential flagged embedding-capable there can
+// never produce a vector - it just leaves knowledge bases indexing into
+// nothing. Unknown providers are allowed: we cannot rule them out.
+const PROVIDERS_WITHOUT_EMBEDDINGS = new Set(['anthropic', 'claude']);
+
+export function providerSupportsEmbeddings(providerId: string): boolean {
+  return !PROVIDERS_WITHOUT_EMBEDDINGS.has(providerId.trim().toLowerCase());
+}
+
 export function getProvider(id: string): IProviderDef | null {
   return PROVIDERS.find((p) => p.id === id) ?? null;
 }

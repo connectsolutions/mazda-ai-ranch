@@ -5,9 +5,10 @@ import { McpServerSeeder } from './domain/mcpServer.seeder';
 import { McpServerGateway } from './data/mcpServer.gateway';
 import { McpServerMapper } from './data/mcpServer.mapper';
 import { AuthModule } from '#/user/auth/auth.module';
+import { SettingModule } from '#/setting/setting.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, SettingModule],
   controllers: [McpServerController],
   providers: [
     McpServerMapper,

@@ -16,6 +16,18 @@ export interface ISourceData {
   updatedAt: Date;
 }
 
+/**
+ * Result of pushing one source through LightRAG's ingest-then-process
+ * pipeline. `indexed` is true only once LightRAG reports the document as
+ * processed, i.e. actually searchable.
+ */
+export interface ISourceIndexOutcome {
+  sourceId: string;
+  name: string;
+  indexed: boolean;
+  error: string | null;
+}
+
 export interface ICreateSourceData {
   knowledgeId: string;
   type: SourceTypes;
