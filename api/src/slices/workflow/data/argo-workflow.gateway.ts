@@ -8,7 +8,11 @@ import { IInfraConfigGateway, ISettingGateway } from '#/setting/domain';
 import { ILlmGateway } from '#/llm/domain';
 import { normalizeCredential } from '#/llm/domain/llm.utils';
 import { ITemplateGateway } from '#/agent/template/domain';
-import { IMcpServerGateway, IMcpServerData } from '#/mcpServer/domain';
+import {
+  IMcpServerGateway,
+  IMcpServerData,
+  dedupeMcpServersByUrl,
+} from '#/mcpServer/domain';
 import { IKnowledgeGateway } from '#/reins/knowledge/domain';
 import { IKnowledgeConfigGateway } from '#/reins/config/domain';
 import {
@@ -122,7 +126,17 @@ export class ArgoWorkflowGateway extends IWorkflowGateway {
       }
     }
 
-    return enabledServers.map((m) => this.toRuntimeConfig(m, ranchApiToken));
+    const deduped = dedupeMcpServersByUrl(enabledServers);
+    if (deduped.length < enabledServers.length) {
+      const dropped = enabledServers
+        .filter((m) => !deduped.includes(m))
+        .map((m) => m.name);
+      this.logger.log(
+        `Collapsed MCP server(s) sharing a url: ${dropped.join(', ')}`,
+      );
+    }
+
+    return deduped.map((m) => this.toRuntimeConfig(m, ranchApiToken));
   }
 
   private async shouldInjectKnowledge(
