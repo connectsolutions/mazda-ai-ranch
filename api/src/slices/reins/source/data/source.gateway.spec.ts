@@ -1,7 +1,10 @@
 import { SourceGateway } from './source.gateway';
 import { SourceMapper } from './source.mapper';
 import { ISourceData } from '../domain/source.types';
-import { ITrackStatus } from '../../lightrag/domain/lightrag.types';
+import {
+  ITrackStatus,
+  DocumentProcessingStatusTypes,
+} from '../../lightrag/domain/lightrag.types';
 
 const POLL_MS = 3000;
 const TIMEOUT_MS = 10 * 60 * 1000;
@@ -64,7 +67,28 @@ function makePrismaStub(docIds: Record<string, string | null> = {}) {
   };
 }
 
-function makeLightragStub(statuses: ITrackStatus[]) {
+function inFlight(): ITrackStatus {
+  return {
+    documents: [{ id: 'doc-1', status: 'processing', errorMessage: null }],
+  };
+}
+
+function duplicateOf(docId: string, originalStatus: string): ITrackStatus {
+  return {
+    documents: [
+      {
+        id: 'dup-1',
+        status: 'failed',
+        errorMessage: `Identical content already exists under another filename. Original doc_id: ${docId}, Status: ${originalStatus}`,
+      },
+    ],
+  };
+}
+
+function makeLightragStub(
+  statuses: ITrackStatus[],
+  snapshot: Map<string, DocumentProcessingStatusTypes> = new Map(),
+) {
   const queue = [...statuses];
   return {
     ingestText: jest.fn(() => Promise.resolve({ docId: 'track-1' })),
@@ -73,6 +97,7 @@ function makeLightragStub(statuses: ITrackStatus[]) {
     getTrackStatus: jest.fn(() =>
       Promise.resolve(queue.length > 1 ? queue.shift()! : queue[0]),
     ),
+    listDocumentStatuses: jest.fn(() => Promise.resolve(snapshot)),
   };
 }
 
@@ -170,6 +195,80 @@ describe('SourceGateway.indexSources', () => {
       { sourceId: 'src-1', name: 'notes.txt', indexed: true, error: null },
     ]);
     expect(prisma.docIds['src-1']).toBe('track-existing');
+  });
+
+  it('waits for a document still in the pipeline instead of re-uploading it', async () => {
+    const prisma = makePrismaStub({ 'src-1': 'track-existing' });
+    const lightrag = makeLightragStub([inFlight(), processed()]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    const run = gateway.indexSources([makeSource({ indexed: true })]);
+    await jest.advanceTimersByTimeAsync(POLL_MS * 2);
+    const outcomes = await run;
+
+    // Re-uploading here is what made LightRAG answer 409 "Document storage
+    // already contains ..." when an index run overlapped a reprocess.
+    expect(lightrag.ingestText).not.toHaveBeenCalled();
+    expect(outcomes[0].indexed).toBe(true);
+  });
+
+  it('adopts the original document when the upload is refused as a duplicate', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub([
+      duplicateOf('doc-c8d0423fb8bc5700de256d6cb7fe89c8', 'processed'),
+    ]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    const run = gateway.indexSources([makeSource()]);
+    await jest.advanceTimersByTimeAsync(POLL_MS);
+    const outcomes = await run;
+
+    expect(outcomes[0]).toEqual({
+      sourceId: 'src-1',
+      name: 'notes.txt',
+      indexed: true,
+      error: null,
+    });
+    expect(prisma.docIds['src-1']).toBe('doc-c8d0423fb8bc5700de256d6cb7fe89c8');
+  });
+
+  it('does not adopt an original document that failed itself', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub([
+      duplicateOf('doc-c8d0423fb8bc5700de256d6cb7fe89c8', 'failed'),
+    ]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    const run = gateway.indexSources([makeSource()]);
+    await jest.advanceTimersByTimeAsync(POLL_MS);
+    const outcomes = await run;
+
+    expect(outcomes[0].indexed).toBe(false);
+    expect(outcomes[0].error).toContain('Identical content already exists');
+    expect(prisma.docIds['src-1']).toBeUndefined();
+  });
+
+  it('resolves an adopted doc id through the document snapshot', async () => {
+    const prisma = makePrismaStub({
+      'src-1': 'doc-c8d0423fb8bc5700de256d6cb7fe89c8',
+    });
+    // An adopted doc id is not a track id, so track_status knows nothing about
+    // it. Without the snapshot fallback the source would be re-ingested and
+    // refused as a duplicate again, forever.
+    const lightrag = makeLightragStub(
+      [{ documents: [] }],
+      new Map<string, DocumentProcessingStatusTypes>([
+        ['doc-c8d0423fb8bc5700de256d6cb7fe89c8', 'processed'],
+      ]),
+    );
+    const gateway = makeGateway(prisma, lightrag);
+
+    const outcomes = await gateway.indexSources([
+      makeSource({ indexed: true }),
+    ]);
+
+    expect(lightrag.ingestText).not.toHaveBeenCalled();
+    expect(outcomes[0].indexed).toBe(true);
   });
 
   it('gives up after the timeout and reports the source as retryable', async () => {

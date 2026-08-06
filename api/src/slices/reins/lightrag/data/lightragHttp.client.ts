@@ -213,6 +213,24 @@ export class LightragHttpClient extends ILightragClient {
     return this.fetchTrackStatus(cfg, trackId);
   }
 
+  /**
+   * One snapshot of every document LightRAG knows about, keyed by doc id.
+   * Used to resolve documents we only know by doc id rather than track id -
+   * notably one LightRAG rejected as a duplicate of an existing document.
+   */
+  async listDocumentStatuses(): Promise<
+    Map<string, DocumentProcessingStatusTypes>
+  > {
+    const cfg = await this.requireEnabled();
+    const res = await this.fetchImpl(`${cfg.baseUrl}/documents`, {
+      method: 'GET',
+      headers: this.headers(cfg.apiKey),
+    });
+    await this.ensureOk(res, '/documents');
+    const body: unknown = await res.json();
+    return extractDocumentStatuses(body);
+  }
+
   private async fetchTrackStatus(
     cfg: ResolvedRequestConfig,
     trackId: string,
@@ -388,6 +406,26 @@ function extractTrackStatus(body: unknown): ITrackStatus {
     });
   }
   return { documents };
+}
+
+function extractDocumentStatuses(
+  body: unknown,
+): Map<string, DocumentProcessingStatusTypes> {
+  const out = new Map<string, DocumentProcessingStatusTypes>();
+  if (!isRecord(body)) return out;
+  const statuses = body.statuses;
+  if (!isRecord(statuses)) return out;
+
+  for (const [statusName, docs] of Object.entries(statuses)) {
+    if (!Array.isArray(docs)) continue;
+    for (const doc of docs) {
+      if (!isRecord(doc) || typeof doc.id !== 'string') continue;
+      // The per-document `status` field is authoritative when present; the
+      // bucket name is the fallback (they agree in practice).
+      out.set(doc.id, toProcessingStatus(doc.status ?? statusName));
+    }
+  }
+  return out;
 }
 
 function toProcessingStatus(value: unknown): DocumentProcessingStatusTypes {

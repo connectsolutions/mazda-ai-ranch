@@ -9,6 +9,7 @@ import { PrismaService } from '#/setup/prisma/prisma.service';
 import { S3Repository } from '#/aws/s3';
 import { IKnowledgeConfigGateway } from '../../config/domain/knowledgeConfig.gateway';
 import { ILightragClient } from '../../lightrag/domain/lightrag.client';
+import { DocumentProcessingStatusTypes } from '../../lightrag/domain/lightrag.types';
 import { workspaceOf } from '../../lightrag/data/workspace';
 import { ISourceGateway } from '../domain/source.gateway';
 import {
@@ -33,6 +34,27 @@ function sleep(ms: number): Promise<void> {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+type IExistingIndexCheck =
+  | { kind: 'indexed' }
+  | { kind: 'inFlight'; trackId: string }
+  | { kind: 'stale' }
+  | { kind: 'unknown'; error: string };
+
+// "Identical content already exists under another filename. Original doc_id:
+// doc-abc123, Status: processed" - only worth adopting when that original is
+// itself processed; a failed original has nothing to offer.
+// Deliberately lenient about the id itself: a stricter pattern would silently
+// stop adopting the day LightRAG changes its id format, putting the duplicate
+// loop back.
+const DUPLICATE_OF = /Original doc_id:\s*(\S+?),?\s*Status:\s*(\w+)/i;
+
+function adoptableDocId(message: string | null): string | null {
+  if (message === null) return null;
+  const match = DUPLICATE_OF.exec(message);
+  if (match === null) return null;
+  return match[2].toLowerCase() === 'processed' ? match[1] : null;
 }
 
 @Injectable()
@@ -202,12 +224,29 @@ export class SourceGateway extends ISourceGateway {
     const outcomes = new Map<string, ISourceIndexOutcome>();
     const inFlight = new Map<string, ISourceData>();
 
+    // One snapshot of everything LightRAG holds, so a document we only know by
+    // doc id (adopted from a duplicate rejection) can still be resolved.
+    const known = await this.snapshotDocuments();
+
     for (const source of sources) {
-      const settled = await this.settleAlreadyIndexed(source);
-      if (settled) {
-        outcomes.set(source.id, settled);
+      const existing = await this.checkExistingIndex(source, known);
+
+      if (existing.kind === 'indexed') {
+        outcomes.set(source.id, this.indexed(source));
         continue;
       }
+      if (existing.kind === 'inFlight') {
+        // Already moving through the pipeline. Re-uploading here is what made
+        // LightRAG answer 409 "Document storage already contains ..." for
+        // every source when an index run overlapped a reprocess.
+        inFlight.set(existing.trackId, source);
+        continue;
+      }
+      if (existing.kind === 'unknown') {
+        outcomes.set(source.id, this.failed(source, existing.error));
+        continue;
+      }
+
       try {
         const workspace = workspaceOf(source.knowledgeId);
         const trackId = await this.ingestByType(source, workspace);
@@ -230,48 +269,89 @@ export class SourceGateway extends ISourceGateway {
     return { sourceId: source.id, name: source.name, indexed: false, error };
   }
 
+  private indexed(source: ISourceData): ISourceIndexOutcome {
+    return {
+      sourceId: source.id,
+      name: source.name,
+      indexed: true,
+      error: null,
+    };
+  }
+
+  private async snapshotDocuments(): Promise<
+    Map<string, DocumentProcessingStatusTypes>
+  > {
+    try {
+      return await this.lightrag.listDocumentStatuses();
+    } catch (err) {
+      // Not fatal: the per-source track lookups below still work, the snapshot
+      // only helps for adopted doc ids.
+      this.logger.warn(`listDocumentStatuses failed: ${errorMessage(err)}`);
+      return new Map();
+    }
+  }
+
   /**
-   * A source already carrying a doc id is only trusted if LightRAG still
-   * reports that document as processed. Otherwise the claim is dropped so the
-   * caller re-ingests. This is what unsticks bases indexed before the pipeline
-   * was actually checked: they look indexed but LightRAG has nothing.
+   * Classifies what LightRAG currently knows about a source that claims to be
+   * indexed. The distinction that matters is between "gone or failed" (re-send
+   * it) and "still in the pipeline" (wait for it) - conflating the two made an
+   * index run fight an in-progress reprocess.
    */
-  private async settleAlreadyIndexed(
+  private async checkExistingIndex(
     source: ISourceData,
-  ): Promise<ISourceIndexOutcome | null> {
-    if (!source.indexed) return null;
+    known: Map<string, DocumentProcessingStatusTypes>,
+  ): Promise<IExistingIndexCheck> {
+    if (!source.indexed) return { kind: 'stale' };
 
     const record = await this.prisma.source.findUnique({
       where: { id: source.id },
       select: { lightragDocId: true },
     });
-    const trackId = record?.lightragDocId ?? null;
-    if (trackId === null) return null;
+    const storedId = record?.lightragDocId ?? null;
+    if (storedId === null) return { kind: 'stale' };
 
     try {
-      const status = await this.lightrag.getTrackStatus(trackId);
-      const processed =
-        status.documents.length > 0 &&
-        status.documents.every((d) => d.status === 'processed');
-      if (processed) {
-        return {
-          sourceId: source.id,
-          name: source.name,
-          indexed: true,
-          error: null,
-        };
+      const status = await this.lightrag.getTrackStatus(storedId);
+      const statuses =
+        status.documents.length > 0
+          ? status.documents.map((d) => d.status)
+          : // Not a track id LightRAG knows. It may be a doc id adopted from a
+            // duplicate rejection, so fall back to the snapshot.
+            this.statusesFromSnapshot(storedId, known);
+
+      if (statuses.length === 0) {
+        await this.forgetDocId(source.id);
+        return { kind: 'stale' };
+      }
+      if (statuses.every((s) => s === 'processed')) return { kind: 'indexed' };
+      if (statuses.some((s) => s === 'pending' || s === 'processing')) {
+        return { kind: 'inFlight', trackId: storedId };
       }
     } catch (err) {
       // Cannot tell either way, so keep the existing claim and report the
       // source as unverified for this run rather than re-ingesting blindly.
-      return this.failed(source, errorMessage(err));
+      return { kind: 'unknown', error: errorMessage(err) };
     }
 
+    // Failed, or a state we do not treat as in flight: drop the claim so this
+    // run re-sends it.
+    await this.forgetDocId(source.id);
+    return { kind: 'stale' };
+  }
+
+  private statusesFromSnapshot(
+    docId: string,
+    known: Map<string, DocumentProcessingStatusTypes>,
+  ): DocumentProcessingStatusTypes[] {
+    const status = known.get(docId);
+    return status ? [status] : [];
+  }
+
+  private async forgetDocId(sourceId: string): Promise<void> {
     await this.prisma.source.update({
-      where: { id: source.id },
+      where: { id: sourceId },
       data: { lightragDocId: null },
     });
-    return null;
   }
 
   private async awaitProcessing(
@@ -293,6 +373,22 @@ export class SourceGateway extends ISourceGateway {
           const failure = status.documents.find((d) => d.status === 'failed');
           if (failure) {
             inFlight.delete(trackId);
+
+            // LightRAG deduplicates by content hash. When the same text is
+            // already stored under another filename it refuses the upload and
+            // names the original. If that original is processed the content is
+            // searchable, so adopt its id rather than reporting a failure the
+            // next run would only reproduce.
+            const adopted = adoptableDocId(failure.errorMessage);
+            if (adopted !== null) {
+              await this.prisma.source.update({
+                where: { id: source.id },
+                data: { lightragDocId: adopted },
+              });
+              outcomes.set(source.id, this.indexed(source));
+              continue;
+            }
+
             outcomes.set(
               source.id,
               this.failed(
