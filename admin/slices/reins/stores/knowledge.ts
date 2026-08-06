@@ -3,6 +3,7 @@ import type {
   ICreateKnowledgeInput,
   IGraph,
   IKnowledge,
+  IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IQueryResult,
   ISource,
@@ -18,6 +19,7 @@ export type {
   ICreateKnowledgeInput,
   IGraph,
   IKnowledge,
+  IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IndexStatus,
   IQueryResult,
@@ -44,11 +46,13 @@ export const useKnowledgeStore = defineStore('reins-knowledge', () => {
   const enabled = ref<boolean>(false);
   const statusChecked = ref<boolean>(false);
   const setup = ref<IKnowledgeSetupStatus>(EMPTY_SETUP);
+  const runtime = ref<IKnowledgeRuntimeConfig | null>(null);
 
   async function fetchStatus(): Promise<boolean> {
     const status = await getService().status();
     enabled.value = status.enabled;
     setup.value = status.setup;
+    runtime.value = status.runtime;
     statusChecked.value = true;
     return enabled.value;
   }
@@ -164,6 +168,7 @@ export const useKnowledgeStore = defineStore('reins-knowledge', () => {
     enabled,
     statusChecked,
     setup,
+    runtime,
     fetchStatus,
     fetchAll,
     fetchById,

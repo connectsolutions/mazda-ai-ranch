@@ -16,6 +16,7 @@ import {
   ITrackStatus,
   IDocumentProcessingStatus,
   DocumentProcessingStatusTypes,
+  ILightragRuntimeConfig,
   LightragClientError,
 } from '../domain/lightrag.types';
 
@@ -61,7 +62,8 @@ export class LightragHttpClient extends ILightragClient {
         signal: controller.signal,
       });
       await this.ensureOk(res, '/health');
-      return { ok: true };
+      const body: unknown = await res.json();
+      return { ok: true, configuration: extractRuntimeConfig(body) };
     } finally {
       clearTimeout(timer);
     }
@@ -351,6 +353,25 @@ function extractQueryResult(body: unknown): IQueryResult {
 function extractLabels(body: unknown): string[] {
   if (!Array.isArray(body)) return [];
   return body.filter((x): x is string => typeof x === 'string');
+}
+
+function extractRuntimeConfig(body: unknown): ILightragRuntimeConfig | null {
+  if (!isRecord(body)) return null;
+  const config = body.configuration;
+  if (!isRecord(config)) return null;
+
+  const read = (key: string): string | null => {
+    const value = config[key];
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  };
+
+  return {
+    llmBinding: read('llm_binding'),
+    llmModel: read('llm_model'),
+    embeddingBinding: read('embedding_binding'),
+    embeddingModel: read('embedding_model'),
+    embeddingBindingHost: read('embedding_binding_host'),
+  };
 }
 
 function extractTrackStatus(body: unknown): ITrackStatus {

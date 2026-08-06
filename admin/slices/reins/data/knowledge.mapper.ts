@@ -1,6 +1,7 @@
 import type {
   IGraph,
   IKnowledge,
+  IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IKnowledgeStatus,
   IndexStatus,
@@ -111,10 +112,28 @@ export class KnowledgeMapper {
 
   toStatus(raw: unknown): IKnowledgeStatus {
     if (!raw || typeof raw !== 'object' || typeof (raw as Record<string, unknown>).enabled !== 'boolean') {
-      return { enabled: false, setup: { ...EMPTY_SETUP } };
+      return { enabled: false, setup: { ...EMPTY_SETUP }, runtime: null };
     }
     const o = raw as Record<string, unknown>;
-    return { enabled: o.enabled === true, setup: this.toSetup(o.setup) };
+    return {
+      enabled: o.enabled === true,
+      setup: this.toSetup(o.setup),
+      runtime: this.toRuntime(o.runtime),
+    };
+  }
+
+  private toRuntime(raw: unknown): IKnowledgeRuntimeConfig | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const o = raw as Record<string, unknown>;
+    const nullableStr = (value: unknown): string | null =>
+      typeof value === 'string' && value.length > 0 ? value : null;
+    return {
+      llmBinding: nullableStr(o.llmBinding),
+      llmModel: nullableStr(o.llmModel),
+      embeddingBinding: nullableStr(o.embeddingBinding),
+      embeddingModel: nullableStr(o.embeddingModel),
+      embeddingBindingHost: nullableStr(o.embeddingBindingHost),
+    };
   }
 
   toQueryResult(raw: unknown): IQueryResult {

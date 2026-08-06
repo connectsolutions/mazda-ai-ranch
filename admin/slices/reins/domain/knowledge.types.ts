@@ -65,9 +65,23 @@ export interface IKnowledgeSetupStatus {
   isHealthy: boolean;
 }
 
+/**
+ * What LightRAG is actually running, read from its own /health. Its bindings
+ * are resolved from container env at startup, so this is the effective config
+ * regardless of what is selected in the admin.
+ */
+export interface IKnowledgeRuntimeConfig {
+  llmBinding: string | null;
+  llmModel: string | null;
+  embeddingBinding: string | null;
+  embeddingModel: string | null;
+  embeddingBindingHost: string | null;
+}
+
 export interface IKnowledgeStatus {
   enabled: boolean;
   setup: IKnowledgeSetupStatus;
+  runtime: IKnowledgeRuntimeConfig | null;
 }
 
 export interface ISourceArchiveResult {

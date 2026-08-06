@@ -43,10 +43,14 @@ const TEXT_FIELDS: ITextField[] = [
 
 const settingStore = useSettingStore();
 const llmStore = useLlmStore();
+const knowledgeStore = useKnowledgeStore();
 
 await Promise.all([
   useAsyncData('admin-settings-knowledge', () => settingStore.fetchAll()),
   useAsyncData('admin-settings-knowledge-llms', () => llmStore.fetchAll()),
+  useAsyncData('admin-settings-knowledge-runtime', () =>
+    knowledgeStore.fetchStatus(),
+  ),
 ]);
 
 function readEnabled(): boolean {
@@ -66,16 +70,24 @@ for (const f of TEXT_FIELDS) {
   values[f.name] = readString(f.name);
 }
 const chatCredentialId = ref<string>(readString('chat_credential_id'));
-const embeddingCredentialId = ref<string>(readString('embedding_credential_id'));
 
 const chatCredentials = computed<ILlmCredentialData[]>(() =>
   llmStore.items.filter((c) => c.supportsChat && c.status === 'active'),
 );
-const embeddingCredentials = computed<ILlmCredentialData[]>(() =>
-  llmStore.items.filter(
-    (c) => c.supportsEmbedding && c.status === 'active',
-  ),
-);
+
+const runtime = computed(() => knowledgeStore.runtime);
+
+const runtimeRows = computed<{ label: string; value: string | null }[]>(() => {
+  const r = knowledgeStore.runtime;
+  if (r === null) return [];
+  return [
+    { label: 'Chat binding', value: r.llmBinding },
+    { label: 'Chat model', value: r.llmModel },
+    { label: 'Embedding binding', value: r.embeddingBinding },
+    { label: 'Embedding model', value: r.embeddingModel },
+    { label: 'Embedding endpoint', value: r.embeddingBindingHost },
+  ];
+});
 
 function credentialLabel(c: ILlmCredentialData): string {
   const tag = c.label !== null && c.label.length > 0 ? ` (${c.label})` : '';
@@ -87,12 +99,8 @@ const savedAt = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 
 async function onSave(): Promise<void> {
-  if (
-    enabled.value &&
-    (chatCredentialId.value === '' || embeddingCredentialId.value === '')
-  ) {
-    errorMessage.value =
-      'Pick both a chat and an embedding credential before enabling the service.';
+  if (enabled.value && chatCredentialId.value === '') {
+    errorMessage.value = 'Pick a chat credential before enabling the service.';
     return;
   }
 
@@ -125,18 +133,6 @@ async function onSave(): Promise<void> {
           SETTING_GROUP,
           'chat_credential_id',
           chatCredentialId.value,
-          'string',
-        ),
-      );
-    }
-
-    const currentEmbedding = readString('embedding_credential_id');
-    if (embeddingCredentialId.value !== currentEmbedding) {
-      tasks.push(
-        settingStore.upsert(
-          SETTING_GROUP,
-          'embedding_credential_id',
-          embeddingCredentialId.value,
           'string',
         ),
       );
@@ -192,9 +188,9 @@ async function onSave(): Promise<void> {
       <CardHeader>
         <CardTitle>LLM credentials</CardTitle>
         <CardDescription>
-          Pick which LLM credentials LightRAG uses. Chat handles agent
-          invocations against the knowledge graph; embedding vectorizes source
-          chunks. Filtered by capability flags.
+          The chat credential LightRAG should use for entity extraction and
+          answers. Note that LightRAG has no Anthropic binding: Claude reaches
+          it only through Bedrock or an OpenAI-compatible gateway.
         </CardDescription>
       </CardHeader>
       <CardContent class="grid max-w-xl gap-4">
@@ -223,42 +219,39 @@ async function onSave(): Promise<void> {
           </p>
         </div>
 
-        <div class="grid gap-2">
-          <Label for="embedding-credential">Embedding LLM credential</Label>
-          <select
-            id="embedding-credential"
-            v-model="embeddingCredentialId"
-            class="h-9 rounded-md border bg-background px-3 text-sm"
-          >
-            <option value="">(unset)</option>
-            <option
-              v-for="c in embeddingCredentials"
-              :key="c.id"
-              :value="c.id"
-            >
-              {{ credentialLabel(c) }}
-            </option>
-          </select>
-          <p class="text-xs text-muted-foreground">
-            Used as <code>EMBEDDING_BINDING</code> /
-            <code>EMBEDDING_MODEL</code> /
-            <code>EMBEDDING_BINDING_API_KEY</code>.
-          </p>
-          <p class="text-xs text-muted-foreground/70">
-            knowledge/embedding_credential_id
-          </p>
-        </div>
-
         <p
           class="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground"
         >
-          After changing credentials, URL, or any LightRAG-relevant value,
-          update <code>OPENAI_API_KEY</code> and the embedding/LLM model env
-          vars in your <code>.env</code> (local dev) or the
-          <code>lightrag-api</code> k8s secret (prod), then restart the
-          LightRAG container or pod. Auto-sync of these values from the admin
-          is planned for a follow-up phase.
+          This is intent, not effect. LightRAG resolves its bindings from
+          container env at startup, so after changing anything here update the
+          matching vars in your <code>.env</code> (local dev) or the
+          <code>lightrag-api</code> k8s secret (prod) and restart the LightRAG
+          pod. What it is running right now is shown below.
         </p>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>What LightRAG is running</CardTitle>
+        <CardDescription>
+          Read live from the service. The embedding model is not selectable
+          here: it is fixed by the container env, and changing it invalidates
+          every stored vector, so it needs a full re-index.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <p v-if="runtime === null" class="text-sm text-muted-foreground">
+          Not reachable. Check the service URL and API key above, then reload.
+        </p>
+        <dl v-else class="grid max-w-xl gap-2 text-sm">
+          <div v-for="row in runtimeRows" :key="row.label" class="flex gap-3">
+            <dt class="w-56 shrink-0 text-muted-foreground">
+              {{ row.label }}
+            </dt>
+            <dd class="font-mono">{{ row.value ?? 'unset' }}</dd>
+          </div>
+        </dl>
       </CardContent>
     </Card>
 

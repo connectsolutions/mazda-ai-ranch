@@ -7,9 +7,11 @@ import {
   Body,
   Param,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiOkResponse } from '@nestjs/swagger';
 import { ILlmGateway, ILlmHealthGateway } from './domain';
+import { providerSupportsEmbeddings } from './domain/llm.utils';
 import {
   CreateLlmCredentialDto,
   UpdateLlmCredentialDto,
@@ -41,13 +43,37 @@ export class LlmController {
   @Post()
   @ApiOperation({ summary: 'Create a new LLM credential' })
   create(@Body() dto: CreateLlmCredentialDto) {
+    this.assertEmbeddingClaimIsPossible(dto.provider, dto.supportsEmbedding);
     return this.gateway.create(dto);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'Update an LLM credential' })
-  update(@Param('id') id: string, @Body() dto: UpdateLlmCredentialDto) {
+  async update(@Param('id') id: string, @Body() dto: UpdateLlmCredentialDto) {
+    const existing = await this.gateway.findById(id);
+    if (!existing) throw new NotFoundException('LLM credential not found');
+    this.assertEmbeddingClaimIsPossible(
+      dto.provider ?? existing.provider,
+      dto.supportsEmbedding,
+    );
     return this.gateway.update(id, dto);
+  }
+
+  /**
+   * A credential marked embedding-capable is offered wherever an embedding
+   * model is needed. Letting a provider without an embeddings endpoint carry
+   * that flag is how a knowledge base ends up reporting itself indexed while
+   * LightRAG never produced a single vector.
+   */
+  private assertEmbeddingClaimIsPossible(
+    provider: string,
+    supportsEmbedding: boolean | undefined,
+  ): void {
+    if (supportsEmbedding !== true) return;
+    if (providerSupportsEmbeddings(provider)) return;
+    throw new BadRequestException(
+      `Provider "${provider}" has no embeddings API, so this credential cannot be used for embeddings.`,
+    );
   }
 
   @Delete(':id')
