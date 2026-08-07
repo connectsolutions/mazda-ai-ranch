@@ -17,6 +17,7 @@ import {
   IDocumentProcessingStatus,
   DocumentProcessingStatusTypes,
   ILightragRuntimeConfig,
+  IDocumentRecord,
   LightragClientError,
 } from '../domain/lightrag.types';
 
@@ -214,13 +215,11 @@ export class LightragHttpClient extends ILightragClient {
   }
 
   /**
-   * One snapshot of every document LightRAG knows about, keyed by doc id.
-   * Used to resolve documents we only know by doc id rather than track id -
-   * notably one LightRAG rejected as a duplicate of an existing document.
+   * One snapshot of every document LightRAG holds. Callers index it by doc id
+   * or by filename: both are needed to reconcile a source whose upload was
+   * refused because the content or the filename is already stored.
    */
-  async listDocumentStatuses(): Promise<
-    Map<string, DocumentProcessingStatusTypes>
-  > {
+  async listDocuments(): Promise<IDocumentRecord[]> {
     const cfg = await this.requireEnabled();
     const res = await this.fetchImpl(`${cfg.baseUrl}/documents`, {
       method: 'GET',
@@ -228,7 +227,7 @@ export class LightragHttpClient extends ILightragClient {
     });
     await this.ensureOk(res, '/documents');
     const body: unknown = await res.json();
-    return extractDocumentStatuses(body);
+    return extractDocuments(body);
   }
 
   private async fetchTrackStatus(
@@ -408,10 +407,8 @@ function extractTrackStatus(body: unknown): ITrackStatus {
   return { documents };
 }
 
-function extractDocumentStatuses(
-  body: unknown,
-): Map<string, DocumentProcessingStatusTypes> {
-  const out = new Map<string, DocumentProcessingStatusTypes>();
+function extractDocuments(body: unknown): IDocumentRecord[] {
+  const out: IDocumentRecord[] = [];
   if (!isRecord(body)) return out;
   const statuses = body.statuses;
   if (!isRecord(statuses)) return out;
@@ -420,9 +417,13 @@ function extractDocumentStatuses(
     if (!Array.isArray(docs)) continue;
     for (const doc of docs) {
       if (!isRecord(doc) || typeof doc.id !== 'string') continue;
-      // The per-document `status` field is authoritative when present; the
-      // bucket name is the fallback (they agree in practice).
-      out.set(doc.id, toProcessingStatus(doc.status ?? statusName));
+      out.push({
+        id: doc.id,
+        // The per-document `status` field is authoritative when present; the
+        // bucket name is the fallback (they agree in practice).
+        status: toProcessingStatus(doc.status ?? statusName),
+        filePath: typeof doc.file_path === 'string' ? doc.file_path : null,
+      });
     }
   }
   return out;

@@ -3,7 +3,7 @@ import { SourceMapper } from './source.mapper';
 import { ISourceData } from '../domain/source.types';
 import {
   ITrackStatus,
-  DocumentProcessingStatusTypes,
+  IDocumentRecord,
 } from '../../lightrag/domain/lightrag.types';
 
 const POLL_MS = 3000;
@@ -87,7 +87,7 @@ function duplicateOf(docId: string, originalStatus: string): ITrackStatus {
 
 function makeLightragStub(
   statuses: ITrackStatus[],
-  snapshot: Map<string, DocumentProcessingStatusTypes> = new Map(),
+  documents: IDocumentRecord[] = [],
 ) {
   const queue = [...statuses];
   return {
@@ -97,7 +97,7 @@ function makeLightragStub(
     getTrackStatus: jest.fn(() =>
       Promise.resolve(queue.length > 1 ? queue.shift()! : queue[0]),
     ),
-    listDocumentStatuses: jest.fn(() => Promise.resolve(snapshot)),
+    listDocuments: jest.fn(() => Promise.resolve(documents)),
   };
 }
 
@@ -257,9 +257,13 @@ describe('SourceGateway.indexSources', () => {
     // refused as a duplicate again, forever.
     const lightrag = makeLightragStub(
       [{ documents: [] }],
-      new Map<string, DocumentProcessingStatusTypes>([
-        ['doc-c8d0423fb8bc5700de256d6cb7fe89c8', 'processed'],
-      ]),
+      [
+        {
+          id: 'doc-c8d0423fb8bc5700de256d6cb7fe89c8',
+          status: 'processed',
+          filePath: 'notes.txt',
+        },
+      ],
     );
     const gateway = makeGateway(prisma, lightrag);
 
@@ -269,6 +273,54 @@ describe('SourceGateway.indexSources', () => {
 
     expect(lightrag.ingestText).not.toHaveBeenCalled();
     expect(outcomes[0].indexed).toBe(true);
+  });
+
+  it('claims the stored document when the upload is refused by filename', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub(
+      [processed()],
+      [{ id: 'doc-stored', status: 'processed', filePath: 'notes.txt' }],
+    );
+    // LightRAG names only the file in this refusal, never the doc id, so the
+    // id has to come from the listing. Ranch reaches this state whenever it
+    // lost the id for a document LightRAG still holds.
+    lightrag.ingestText.mockRejectedValueOnce(
+      new Error(
+        `LightRAG /documents/upload failed: 409 {"detail":"Document storage already contains 'notes.txt' (Status: processed). Delete the existing record before re-uploading."}`,
+      ),
+    );
+    const gateway = makeGateway(prisma, lightrag);
+
+    const outcomes = await gateway.indexSources([makeSource()]);
+
+    expect(outcomes[0]).toEqual({
+      sourceId: 'src-1',
+      name: 'notes.txt',
+      indexed: true,
+      error: null,
+    });
+    expect(prisma.docIds['src-1']).toBe('doc-stored');
+  });
+
+  it('still fails when the stored document under that filename is not processed', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub(
+      [processed()],
+      [{ id: 'doc-stored', status: 'failed', filePath: 'notes.txt' }],
+    );
+    lightrag.ingestText.mockRejectedValueOnce(
+      new Error(
+        `LightRAG /documents/upload failed: 409 {"detail":"Document storage already contains 'notes.txt' (Status: failed)."}`,
+      ),
+    );
+    const gateway = makeGateway(prisma, lightrag);
+
+    const outcomes = await gateway.indexSources([makeSource()]);
+
+    // Claiming a failed document would hide a real problem behind a green
+    // badge.
+    expect(outcomes[0].indexed).toBe(false);
+    expect(prisma.docIds['src-1']).toBeUndefined();
   });
 
   it('gives up after the timeout and reports the source as retryable', async () => {

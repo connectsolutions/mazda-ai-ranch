@@ -48,6 +48,17 @@ export interface ITrackStatus {
   documents: IDocumentProcessingStatus[];
 }
 
+/**
+ * A document as LightRAG stores it. `filePath` matters because LightRAG
+ * refuses an upload whose filename it already holds, and that refusal names
+ * only the file - resolving it back to a doc id needs this listing.
+ */
+export interface IDocumentRecord {
+  id: string;
+  status: DocumentProcessingStatusTypes;
+  filePath: string | null;
+}
+
 export interface IQueryReference {
   referenceId: string;
   filePath: string;

@@ -9,7 +9,7 @@ import {
   IGetGraphInput,
   ILightragGraph,
   ITrackStatus,
-  DocumentProcessingStatusTypes,
+  IDocumentRecord,
 } from './lightrag.types';
 
 export abstract class ILightragClient {
@@ -19,9 +19,7 @@ export abstract class ILightragClient {
   abstract ingestFile(input: IIngestFileInput): Promise<IIngestResult>;
   abstract query(input: IQueryInput): Promise<IQueryResult>;
   abstract getTrackStatus(trackId: string): Promise<ITrackStatus>;
-  abstract listDocumentStatuses(): Promise<
-    Map<string, DocumentProcessingStatusTypes>
-  >;
+  abstract listDocuments(): Promise<IDocumentRecord[]>;
   abstract deleteDocumentsByTrackIds(trackIds: string[]): Promise<void>;
   abstract getGraphLabels(): Promise<string[]>;
   abstract getGraph(input: IGetGraphInput): Promise<ILightragGraph>;

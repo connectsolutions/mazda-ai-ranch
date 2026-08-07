@@ -9,7 +9,10 @@ import { PrismaService } from '#/setup/prisma/prisma.service';
 import { S3Repository } from '#/aws/s3';
 import { IKnowledgeConfigGateway } from '../../config/domain/knowledgeConfig.gateway';
 import { ILightragClient } from '../../lightrag/domain/lightrag.client';
-import { DocumentProcessingStatusTypes } from '../../lightrag/domain/lightrag.types';
+import {
+  DocumentProcessingStatusTypes,
+  IDocumentRecord,
+} from '../../lightrag/domain/lightrag.types';
 import { workspaceOf } from '../../lightrag/data/workspace';
 import { ISourceGateway } from '../domain/source.gateway';
 import {
@@ -49,6 +52,20 @@ type IExistingIndexCheck =
 // stop adopting the day LightRAG changes its id format, putting the duplicate
 // loop back.
 const DUPLICATE_OF = /Original doc_id:\s*(\S+?),?\s*Status:\s*(\w+)/i;
+
+// "Document storage already contains 'some-file.md' (Status: processed)" -
+// this refusal names the file but never the doc id, so the id has to come from
+// the document listing.
+const ALREADY_STORED = /Document storage already contains ['"]([^'"]+)['"]/i;
+
+interface IDocumentSnapshot {
+  byId: Map<string, DocumentProcessingStatusTypes>;
+  byName: Map<string, IDocumentRecord>;
+}
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
 
 function adoptableDocId(message: string | null): string | null {
   if (message === null) return null;
@@ -224,12 +241,13 @@ export class SourceGateway extends ISourceGateway {
     const outcomes = new Map<string, ISourceIndexOutcome>();
     const inFlight = new Map<string, ISourceData>();
 
-    // One snapshot of everything LightRAG holds, so a document we only know by
-    // doc id (adopted from a duplicate rejection) can still be resolved.
+    // One snapshot of everything LightRAG holds, indexed both ways: a rejected
+    // upload names either the original doc id or just the filename, and both
+    // have to lead back to a document.
     const known = await this.snapshotDocuments();
 
     for (const source of sources) {
-      const existing = await this.checkExistingIndex(source, known);
+      const existing = await this.checkExistingIndex(source, known.byId);
 
       if (existing.kind === 'indexed') {
         outcomes.set(source.id, this.indexed(source));
@@ -252,7 +270,20 @@ export class SourceGateway extends ISourceGateway {
         const trackId = await this.ingestByType(source, workspace);
         inFlight.set(trackId, source);
       } catch (err) {
-        outcomes.set(source.id, this.failed(source, errorMessage(err)));
+        const message = errorMessage(err);
+
+        // LightRAG refuses an upload whose filename it already stores, and
+        // says so with the filename only. When that stored document is
+        // processed the content is searchable, so claim it instead of failing
+        // a source that is, in fact, indexed - Ranch simply lost the id.
+        const adopted = this.resolveStoredByName(message, known.byName);
+        if (adopted !== null) {
+          await this.rememberDocId(source.id, adopted);
+          outcomes.set(source.id, this.indexed(source));
+          continue;
+        }
+
+        outcomes.set(source.id, this.failed(source, message));
       }
     }
 
@@ -278,17 +309,51 @@ export class SourceGateway extends ISourceGateway {
     };
   }
 
-  private async snapshotDocuments(): Promise<
-    Map<string, DocumentProcessingStatusTypes>
-  > {
+  private async snapshotDocuments(): Promise<IDocumentSnapshot> {
+    const empty: IDocumentSnapshot = { byId: new Map(), byName: new Map() };
     try {
-      return await this.lightrag.listDocumentStatuses();
+      const documents = await this.lightrag.listDocuments();
+      const snapshot: IDocumentSnapshot = {
+        byId: new Map(),
+        byName: new Map(),
+      };
+      for (const doc of documents) {
+        snapshot.byId.set(doc.id, doc.status);
+        if (doc.filePath !== null) {
+          snapshot.byName.set(normalizeName(doc.filePath), doc);
+        }
+      }
+      return snapshot;
     } catch (err) {
-      // Not fatal: the per-source track lookups below still work, the snapshot
-      // only helps for adopted doc ids.
-      this.logger.warn(`listDocumentStatuses failed: ${errorMessage(err)}`);
-      return new Map();
+      // Not fatal: the per-source track lookups still work, the snapshot only
+      // helps reconcile documents Ranch has lost the id for.
+      this.logger.warn(`listDocuments failed: ${errorMessage(err)}`);
+      return empty;
     }
+  }
+
+  /**
+   * Pulls the filename out of LightRAG's refusal and returns the id of the
+   * stored document, but only when that document is processed. A stored
+   * document that failed is worth nothing, and claiming it would hide a real
+   * problem behind a green badge.
+   */
+  private resolveStoredByName(
+    message: string,
+    byName: Map<string, IDocumentRecord>,
+  ): string | null {
+    const match = ALREADY_STORED.exec(message);
+    if (match === null) return null;
+    const doc = byName.get(normalizeName(match[1]));
+    if (doc === undefined || doc.status !== 'processed') return null;
+    return doc.id;
+  }
+
+  private async rememberDocId(sourceId: string, docId: string): Promise<void> {
+    await this.prisma.source.update({
+      where: { id: sourceId },
+      data: { lightragDocId: docId },
+    });
   }
 
   /**
