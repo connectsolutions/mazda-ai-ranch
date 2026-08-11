@@ -23,12 +23,12 @@ import {
   IUploadedSourceFile,
   ISourceIndexOutcome,
 } from '../domain/source.types';
+import { indexBudgetMs } from '../domain/indexBudget';
 import { SourceMapper } from './source.mapper';
 
-// LightRAG processes ingested documents in a background pipeline. These bound
-// how long one index run waits for that pipeline before giving up and marking
-// the remaining sources as not indexed (so the next run retries them).
-const PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+// LightRAG processes ingested documents in a background pipeline. How long one
+// index run waits for it comes from indexBudgetMs, which scales with the batch:
+// see the note there on why a constant cannot work.
 const PROCESSING_POLL_INTERVAL_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
@@ -425,7 +425,8 @@ export class SourceGateway extends ISourceGateway {
   ): Promise<void> {
     if (inFlight.size === 0) return;
 
-    const deadline = Date.now() + PROCESSING_TIMEOUT_MS;
+    const budgetMs = indexBudgetMs(inFlight.size);
+    const deadline = Date.now() + budgetMs;
 
     while (inFlight.size > 0 && Date.now() < deadline) {
       await sleep(PROCESSING_POLL_INTERVAL_MS);
@@ -487,13 +488,13 @@ export class SourceGateway extends ISourceGateway {
       }
     }
 
-    const timeoutSeconds = Math.round(PROCESSING_TIMEOUT_MS / 1000);
+    const waitedMinutes = Math.round(budgetMs / 60000);
     for (const source of inFlight.values()) {
       outcomes.set(
         source.id,
         this.failed(
           source,
-          `still processing after ${timeoutSeconds}s - will retry on the next index run`,
+          `still processing after ${waitedMinutes} min - will retry on the next index run`,
         ),
       );
     }

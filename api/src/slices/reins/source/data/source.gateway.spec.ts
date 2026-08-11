@@ -5,9 +5,11 @@ import {
   ITrackStatus,
   IDocumentRecord,
 } from '../../lightrag/domain/lightrag.types';
+import { indexBudgetMs } from '../domain/indexBudget';
 
 const POLL_MS = 3000;
-const TIMEOUT_MS = 10 * 60 * 1000;
+// The wait now scales with the batch, so derive it rather than hardcoding.
+const TIMEOUT_MS = indexBudgetMs(1);
 
 function makeSource(overrides: Partial<ISourceData> = {}): ISourceData {
   return {

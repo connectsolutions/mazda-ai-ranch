@@ -11,8 +11,7 @@ import {
   IGraphData,
 } from './knowledge.types';
 import { SourceService } from '../../source/domain/source.service';
-
-const STALE_INDEX_AFTER_MS = 10 * 60 * 1000;
+import { staleIndexAfterMs } from '../../source/domain/indexBudget';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -67,7 +66,12 @@ export class KnowledgeService {
 
     if (k.indexStatus === 'indexing' && k.indexStartedAt) {
       const ageMs = Date.now() - k.indexStartedAt.getTime();
-      if (ageMs < STALE_INDEX_AFTER_MS) {
+      // Scaled to the base's size: a run over 200 documents legitimately takes
+      // far longer than one over a handful, and offering a restart while the
+      // first run is still waiting would set two runs fighting over the same
+      // sources.
+      const sources = await this.sources.findByKnowledge(knowledgeId);
+      if (ageMs < staleIndexAfterMs(sources.length)) {
         throw new Error(
           `Knowledge ${knowledgeId} already indexing (started ${Math.round(ageMs / 1000)}s ago)`,
         );
