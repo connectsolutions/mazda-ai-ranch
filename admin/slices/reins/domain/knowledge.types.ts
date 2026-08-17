@@ -11,6 +11,7 @@ export type IGraph = GraphDto;
 
 export type IndexStatus = 'idle' | 'indexing' | 'ready' | 'failed';
 export type SourceType = 'file' | 'url' | 'text';
+export type SourceIndexStatus = 'indexed' | 'pending' | 'failed';
 export type KnowledgeQueryMode = 'hybrid' | 'local' | 'global' | 'naive';
 
 export interface IKnowledge {
@@ -23,6 +24,10 @@ export interface IKnowledge {
   indexError: string | null;
   indexedAt: string | null;
   indexStartedAt: string | null;
+  /** Index progress over the attached sources, as counted by the API. */
+  sourceCount: number;
+  indexedCount: number;
+  failedCount: number;
   createdAt: string;
   updatedAt: string;
   sources?: ISource[];
@@ -38,8 +43,52 @@ export interface ISource {
   content: string | null;
   sizeBytes: number | null;
   indexed: boolean;
+  indexStatus: SourceIndexStatus;
+  indexError: string | null;
+  indexedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ISourceFilter {
+  page: number;
+  perPage: number;
+  search?: string;
+  status?: SourceIndexStatus;
+  type?: SourceType;
+}
+
+export interface ISourcePage {
+  items: ISource[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export type ImportJobStatus = 'running' | 'done' | 'failed';
+
+/** Progress of one background bulk import (archive). */
+export interface IImportJob {
+  id: string;
+  knowledgeId: string;
+  kind: 'archive';
+  status: ImportJobStatus;
+  detected: number;
+  added: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export type SourceContentDisposition = 'inline' | 'attachment';
+
+/** Bytes of a source as fetched for preview or download. */
+export interface ISourceContent {
+  blob: Blob;
+  filename: string;
+  contentType: string;
 }
 
 export interface ICreateKnowledgeInput {
@@ -87,6 +136,8 @@ export interface IKnowledgeStatus {
 export interface ISourceArchiveResult {
   detected: number;
   started: boolean;
+  /** Id of the background job to follow via listImports. */
+  jobId: string;
 }
 
 export interface ISourceSitemapResult {

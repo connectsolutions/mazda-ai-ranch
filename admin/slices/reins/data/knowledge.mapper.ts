@@ -1,15 +1,20 @@
 import type {
   IGraph,
+  IImportJob,
   IKnowledge,
   IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IKnowledgeStatus,
+  ImportJobStatus,
   IndexStatus,
   IQueryResult,
   ISource,
   ISourceArchiveResult,
   ISourceFilesResult,
+  ISourceFilter,
+  ISourcePage,
   ISourceSitemapResult,
+  SourceIndexStatus,
   SourceType,
 } from '../domain/knowledge.types';
 
@@ -20,6 +25,33 @@ const INDEX_STATUSES = new Set<IndexStatus>([
   'failed',
 ]);
 const SOURCE_TYPES = new Set<SourceType>(['file', 'url', 'text']);
+const SOURCE_INDEX_STATUSES = new Set<SourceIndexStatus>([
+  'indexed',
+  'pending',
+  'failed',
+]);
+const IMPORT_JOB_STATUSES = new Set<ImportJobStatus>([
+  'running',
+  'done',
+  'failed',
+]);
+
+function isSourceIndexStatus(value: unknown): value is SourceIndexStatus {
+  return (
+    typeof value === 'string' &&
+    SOURCE_INDEX_STATUSES.has(value as SourceIndexStatus)
+  );
+}
+
+function isImportJobStatus(value: unknown): value is ImportJobStatus {
+  return (
+    typeof value === 'string' && IMPORT_JOB_STATUSES.has(value as ImportJobStatus)
+  );
+}
+
+function num(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
 
 const EMPTY_SETUP: IKnowledgeSetupStatus = {
   hasChatCredential: false,
@@ -68,6 +100,9 @@ export class KnowledgeMapper {
       indexError: nullableStr(o.indexError),
       indexedAt: nullableStr(o.indexedAt),
       indexStartedAt: nullableStr(o.indexStartedAt),
+      sourceCount: num(o.sourceCount),
+      indexedCount: num(o.indexedCount),
+      failedCount: num(o.failedCount),
       createdAt: str(o.createdAt),
       updatedAt: str(o.updatedAt),
       sources: Array.isArray(o.sources) ? this.toSourceList(o.sources) : undefined,
@@ -98,6 +133,15 @@ export class KnowledgeMapper {
       content: nullableStr(o.content),
       sizeBytes: typeof o.sizeBytes === 'number' ? o.sizeBytes : null,
       indexed: bool(o.indexed),
+      // Older API builds only send `indexed`; derive the status from it so
+      // the table still renders sensibly against them.
+      indexStatus: isSourceIndexStatus(o.indexStatus)
+        ? o.indexStatus
+        : bool(o.indexed)
+          ? 'indexed'
+          : 'pending',
+      indexError: nullableStr(o.indexError),
+      indexedAt: nullableStr(o.indexedAt),
       createdAt: str(o.createdAt),
       updatedAt: str(o.updatedAt),
     };
@@ -108,6 +152,52 @@ export class KnowledgeMapper {
     return raw
       .map((s) => this.toSource(s))
       .filter((s): s is ISource => s !== null);
+  }
+
+  toSourcePage(raw: unknown, requested: ISourceFilter): ISourcePage {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const o = raw as Record<string, unknown>;
+      return {
+        items: this.toSourceList(o.items),
+        total: num(o.total),
+        page: num(o.page) || requested.page,
+        perPage: num(o.perPage) || requested.perPage,
+      };
+    }
+    // A bare array means an API build predating pagination: one page holds it all.
+    const items = this.toSourceList(raw);
+    return {
+      items,
+      total: items.length,
+      page: 1,
+      perPage: Math.max(items.length, requested.perPage),
+    };
+  }
+
+  toImportJob(raw: unknown): IImportJob | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const o = raw as Record<string, unknown>;
+    if (typeof o.id !== 'string') return null;
+    return {
+      id: o.id,
+      knowledgeId: str(o.knowledgeId),
+      kind: 'archive',
+      status: isImportJobStatus(o.status) ? o.status : 'done',
+      detected: num(o.detected),
+      added: num(o.added),
+      skipped: num(o.skipped),
+      failed: num(o.failed),
+      errors: strList(o.errors),
+      startedAt: str(o.startedAt),
+      finishedAt: nullableStr(o.finishedAt),
+    };
+  }
+
+  toImportJobs(raw: unknown): IImportJob[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((j) => this.toImportJob(j))
+      .filter((j): j is IImportJob => j !== null);
   }
 
   toStatus(raw: unknown): IKnowledgeStatus {
@@ -150,10 +240,10 @@ export class KnowledgeMapper {
     if (raw && typeof raw === 'object') {
       const o = raw as Record<string, unknown>;
       if (typeof o.detected === 'number' && typeof o.started === 'boolean') {
-        return { detected: o.detected, started: o.started };
+        return { detected: o.detected, started: o.started, jobId: str(o.jobId) };
       }
     }
-    return { detected: 0, started: false };
+    return { detected: 0, started: false, jobId: '' };
   }
 
   toFilesResult(raw: unknown): ISourceFilesResult {

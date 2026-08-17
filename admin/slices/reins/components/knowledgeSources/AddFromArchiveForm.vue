@@ -30,7 +30,7 @@ async function submit() {
       props.knowledgeId,
       file.value,
     );
-    successMessage.value = `Detected ${result.detected} file${result.detected === 1 ? '' : 's'}. Importing in the background - refresh the list to watch sources appear, then run Index.`;
+    successMessage.value = `Detected ${result.detected} file${result.detected === 1 ? '' : 's'}. Importing in the background - progress shows below this form; run Index once it finishes.`;
     emit('added');
     file.value = null;
   } catch (err: unknown) {
@@ -77,7 +77,9 @@ function cancel() {
         />
         <p class="text-xs text-muted-foreground">
           Every supported file inside becomes a source. Unsupported files
-          (images, video) and macOS metadata are skipped automatically.
+          (images, video) and macOS metadata are skipped automatically. Large
+          archives are fine: the zip streams to disk and files upload one by
+          one.
         </p>
       </div>
 

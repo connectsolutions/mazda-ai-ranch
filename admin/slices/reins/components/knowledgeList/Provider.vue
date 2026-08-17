@@ -97,9 +97,16 @@ async function onRemove(item: IKnowledge) {
             @click="navigateTo(`/knowledges/${item.id}/edit`)"
           >
             <TableCell class="font-medium">{{ item.name }}</TableCell>
-            <TableCell>{{ item.sources?.length ?? 0 }}</TableCell>
             <TableCell>
-              <IndexStatusBadge :status="item.indexStatus" />
+              <span :title="`${item.indexedCount} indexed of ${item.sourceCount}`">
+                {{ item.indexedCount }} / {{ item.sourceCount }}
+              </span>
+              <span v-if="item.failedCount" class="ml-1 text-xs text-destructive">
+                ({{ item.failedCount }} failed)
+              </span>
+            </TableCell>
+            <TableCell>
+              <KnowledgeIndexStatusBadge :status="item.indexStatus" />
             </TableCell>
             <TableCell class="text-muted-foreground">
               {{ formatDate(item.updatedAt) }}
