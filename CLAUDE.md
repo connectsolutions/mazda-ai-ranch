@@ -80,6 +80,26 @@ owns its own module, routes, types, and Prisma model.
 `registerSlices.ts` walks the tree and feeds them to `extends` in the root `nuxt.config.ts`.
 Slices mirror the API's `domain/` + `data/` gateway split on top of a Pinia store. Adding a
 slice means creating the directory with a `nuxt.config.ts`; nothing central needs editing.
+Components auto-import with the directory prefix: `components/knowledge/Foo.vue` is
+`<KnowledgeFoo>`, `components/knowledgeSources/Bar.vue` is `<KnowledgeSourcesBar>`. An
+unprefixed `<Foo>` compiles but renders nothing (`.nuxt/components.d.ts` lists the names).
+
+There is no vue-tsc; the frontends only get syntax-checked when Vite transforms them.
+Fetching `http://localhost:3001/_nuxt/slices/<slice>/<file>` forces that transform for a
+file without clicking through the UI (admin needs a login for most pages).
+
+## Running the API without a global `node`
+
+`nest start` under Bun (which `bun run` substitutes when `node` is absent from PATH) resolves
+`#/...` aliases straight into `src/*.ts` and trips over type-only imports. Put nvm's Node on
+PATH first (`~/.nvm/versions/node/<v>/bin`); with real Node the Nest CLI rewrites aliases in
+`dist` and everything runs as compiled JS. Same reason `make dev` works from an interactive
+shell but not from a bare non-login one.
+
+Local S3 is not configured by env: `S3Repository` reads `integrations/s3_endpoint`,
+`aws_region`, `aws_access_key_id`, `aws_secret_access_key` from the settings table and caches
+the client for the process lifetime. Set them (`PUT /settings/integrations/<name>`) to point
+at MinIO (`http://localhost:9000`, `minioadmin`/`minioadmin`) and restart the API.
 
 ## Generated API client
 
