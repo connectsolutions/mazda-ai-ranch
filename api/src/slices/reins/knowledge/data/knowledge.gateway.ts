@@ -3,7 +3,7 @@ import { PrismaService } from '#/setup/prisma/prisma.service';
 import { ILightragClient } from '../../lightrag/domain/lightrag.client';
 import { IKnowledgeGateway } from '../domain/knowledge.gateway';
 import {
-  IKnowledgeData,
+  IKnowledgeRecord,
   ICreateKnowledgeData,
   IUpdateKnowledgeData,
   IIndexStatePatch,
@@ -25,19 +25,19 @@ export class KnowledgeGateway extends IKnowledgeGateway {
     super();
   }
 
-  async findAll(): Promise<IKnowledgeData[]> {
+  async findAll(): Promise<IKnowledgeRecord[]> {
     const records = await this.prisma.knowledge.findMany({
       orderBy: { createdAt: 'desc' },
     });
     return records.map((r) => this.mapper.toEntity(r));
   }
 
-  async findById(id: string): Promise<IKnowledgeData | null> {
+  async findById(id: string): Promise<IKnowledgeRecord | null> {
     const record = await this.prisma.knowledge.findUnique({ where: { id } });
     return record ? this.mapper.toEntity(record) : null;
   }
 
-  async findExistingByIds(ids: string[]): Promise<IKnowledgeData[]> {
+  async findExistingByIds(ids: string[]): Promise<IKnowledgeRecord[]> {
     if (ids.length === 0) return [];
     const records = await this.prisma.knowledge.findMany({
       where: { id: { in: ids } },
@@ -45,7 +45,7 @@ export class KnowledgeGateway extends IKnowledgeGateway {
     return records.map((r) => this.mapper.toEntity(r));
   }
 
-  async create(data: ICreateKnowledgeData): Promise<IKnowledgeData> {
+  async create(data: ICreateKnowledgeData): Promise<IKnowledgeRecord> {
     const created = await this.prisma.$transaction(async (tx) => {
       const initial = await tx.knowledge.create({
         data: this.mapper.toCreate(data),
@@ -61,7 +61,7 @@ export class KnowledgeGateway extends IKnowledgeGateway {
   async update(
     id: string,
     data: IUpdateKnowledgeData,
-  ): Promise<IKnowledgeData> {
+  ): Promise<IKnowledgeRecord> {
     const record = await this.prisma.knowledge.update({
       where: { id },
       data: {
@@ -81,7 +81,7 @@ export class KnowledgeGateway extends IKnowledgeGateway {
   async updateIndexState(
     id: string,
     patch: IIndexStatePatch,
-  ): Promise<IKnowledgeData> {
+  ): Promise<IKnowledgeRecord> {
     const record = await this.prisma.knowledge.update({
       where: { id },
       data: {

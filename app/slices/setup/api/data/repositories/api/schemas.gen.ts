@@ -552,6 +552,169 @@ export const KnowledgeQueryResultDtoSchema = {
   required: ["answer", "references"],
 } as const;
 
+export const SourceDtoSchema = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+    },
+    knowledgeId: {
+      type: "string",
+    },
+    type: {
+      type: "string",
+      enum: ["file", "url", "text"],
+    },
+    name: {
+      type: "string",
+    },
+    url: {
+      type: "string",
+      nullable: true,
+    },
+    mimeType: {
+      type: "string",
+      nullable: true,
+    },
+    content: {
+      type: "string",
+      nullable: true,
+    },
+    sizeBytes: {
+      type: "number",
+      nullable: true,
+    },
+    indexed: {
+      type: "boolean",
+      description:
+        'True when indexStatus is "indexed". Kept for older callers.',
+    },
+    indexStatus: {
+      type: "string",
+      enum: ["indexed", "pending", "failed"],
+    },
+    indexError: {
+      type: "string",
+      nullable: true,
+      description:
+        "Error from the last index run, null once the source indexes.",
+    },
+    indexedAt: {
+      type: "string",
+      nullable: true,
+    },
+    createdAt: {
+      format: "date-time",
+      type: "string",
+    },
+    updatedAt: {
+      format: "date-time",
+      type: "string",
+    },
+  },
+  required: [
+    "id",
+    "knowledgeId",
+    "type",
+    "name",
+    "url",
+    "mimeType",
+    "content",
+    "sizeBytes",
+    "indexed",
+    "indexStatus",
+    "indexError",
+    "indexedAt",
+    "createdAt",
+    "updatedAt",
+  ],
+} as const;
+
+export const SourcePageDtoSchema = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/SourceDto",
+      },
+    },
+    total: {
+      type: "number",
+      description: "Rows matching the filter across all pages",
+    },
+    page: {
+      type: "number",
+    },
+    perPage: {
+      type: "number",
+    },
+  },
+  required: ["items", "total", "page", "perPage"],
+} as const;
+
+export const ImportJobDtoSchema = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+    },
+    knowledgeId: {
+      type: "string",
+    },
+    kind: {
+      type: "string",
+      enum: ["archive"],
+    },
+    status: {
+      type: "string",
+      enum: ["running", "done", "failed"],
+    },
+    detected: {
+      type: "number",
+      description: "Ingestable entries found up front",
+    },
+    added: {
+      type: "number",
+    },
+    skipped: {
+      type: "number",
+      description: "Entries skipped because a source with that name exists",
+    },
+    failed: {
+      type: "number",
+    },
+    errors: {
+      description: 'First failures as "<name>: <reason>", capped',
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    startedAt: {
+      format: "date-time",
+      type: "string",
+    },
+    finishedAt: {
+      type: "string",
+      nullable: true,
+    },
+  },
+  required: [
+    "id",
+    "knowledgeId",
+    "kind",
+    "status",
+    "detected",
+    "added",
+    "skipped",
+    "failed",
+    "errors",
+    "startedAt",
+    "finishedAt",
+  ],
+} as const;
+
 export const CreateSourceDtoSchema = {
   type: "object",
   properties: {
@@ -570,6 +733,37 @@ export const CreateSourceDtoSchema = {
     },
   },
   required: ["type", "name"],
+} as const;
+
+export const AddFilesResultDtoSchema = {
+  type: "object",
+  properties: {
+    added: {
+      type: "number",
+      example: 8,
+      description: "Files uploaded and registered.",
+    },
+    skipped: {
+      type: "number",
+      example: 2,
+      description:
+        "Files skipped because a file source with the same name already exists on this knowledge.",
+    },
+    failed: {
+      type: "number",
+      example: 1,
+      description: "Files that failed to upload.",
+    },
+    errors: {
+      example: ["broken.pdf: S3 upload failed"],
+      description: "One line per failed file.",
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+  },
+  required: ["added", "skipped", "failed", "errors"],
 } as const;
 
 export const AddFromSitemapDtoSchema = {
@@ -609,14 +803,19 @@ export const AddFromArchiveResultDtoSchema = {
       type: "number",
       example: 288,
       description:
-        "Number of ingestable files detected in the archive. Import runs in the background; refresh the sources list to watch them appear.",
+        "Number of ingestable files detected in the archive. Import runs in the background; poll GET .../sources/imports for progress.",
     },
     started: {
       type: "boolean",
       example: true,
     },
+    jobId: {
+      type: "string",
+      description:
+        "Id of the background import job (see GET .../sources/imports)",
+    },
   },
-  required: ["detected", "started"],
+  required: ["detected", "started", "jobId"],
 } as const;
 
 export const AgentPodStatusDtoSchema = {

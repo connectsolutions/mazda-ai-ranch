@@ -12,6 +12,14 @@ export class KnowledgeDto implements IKnowledgeData {
   @ApiProperty({ type: String, nullable: true }) indexError: string | null;
   @ApiProperty({ type: String, nullable: true }) indexedAt: Date | null;
   @ApiProperty({ type: String, nullable: true }) indexStartedAt: Date | null;
+  @ApiProperty({ description: 'Sources attached to this knowledge' })
+  sourceCount: number;
+  @ApiProperty({ description: 'Sources LightRAG confirmed as processed' })
+  indexedCount: number;
+  @ApiProperty({
+    description: 'Sources whose last index run recorded an error',
+  })
+  failedCount: number;
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
 }

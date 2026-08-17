@@ -5,6 +5,7 @@ import type { IKnowledge } from '#reins/stores/knowledge';
 
 const route = useRoute();
 const store = useKnowledgeStore();
+const confirmStore = useConfirmStore();
 
 const knowledgeId = computed(() => route.params.id as string);
 const current = ref<IKnowledge | null>(null);
@@ -41,8 +42,39 @@ onBeforeUnmount(() => {
   pause();
 });
 
+// Sources that an index run will actually push through LightRAG. Ones already
+// indexed are only re-checked, so they cost nothing.
+const toIndex = computed(() => {
+  if (!current.value) return 0;
+  return current.value.sourceCount - current.value.indexedCount;
+});
+
+const progressPercent = computed(() => {
+  if (!current.value || current.value.sourceCount === 0) return 0;
+  return Math.round(
+    (current.value.indexedCount / current.value.sourceCount) * 100,
+  );
+});
+
 async function handleIndex() {
   if (!current.value) return;
+
+  // Re-indexing is what costs money (LLM over every unindexed document), and
+  // people were pressing it "to be sure". Say exactly what will happen first.
+  const total = current.value.sourceCount;
+  const description =
+    toIndex.value === 0
+      ? `All ${total} source${total === 1 ? ' is' : 's are'} already indexed. This run will only re-verify them against LightRAG and re-send anything it no longer holds; nothing new is billed unless something has to be re-ingested.`
+      : `${toIndex.value} of ${total} source${total === 1 ? '' : 's'} will be sent through the LLM (${current.value.failedCount} failed earlier, ${toIndex.value - current.value.failedCount} never indexed). Already-indexed sources are only re-checked. This costs money and can take a while on a large base.`;
+
+  const ok = await confirmStore.ask({
+    title: `Index ${current.value.name}?`,
+    description,
+    confirmLabel: 'Start indexing',
+    cancelLabel: 'Cancel',
+  });
+  if (!ok) return;
+
   indexing.value = true;
   indexError.value = null;
   try {
@@ -82,13 +114,31 @@ provide('knowledge-refresh', refresh);
     </NuxtLink>
 
     <div v-if="current" class="flex items-start justify-between gap-4">
-      <div class="min-w-0">
+      <div class="min-w-0 flex-1">
         <h1 class="text-2xl font-semibold truncate">{{ current.name }}</h1>
-        <div class="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-          <IndexStatusBadge :status="current.indexStatus" />
+        <div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <KnowledgeIndexStatusBadge :status="current.indexStatus" />
+          <span>
+            Indexed
+            <span class="font-medium text-foreground">{{ current.indexedCount }}</span>
+            / {{ current.sourceCount }}
+          </span>
+          <span v-if="current.failedCount" class="text-destructive">
+            · {{ current.failedCount }} failed
+          </span>
           <span v-if="current.indexError" class="text-destructive">
             {{ current.indexError }}
           </span>
+        </div>
+        <div
+          v-if="current.indexStatus === 'indexing'"
+          class="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded bg-muted"
+          :title="`${progressPercent}%`"
+        >
+          <div
+            class="h-full bg-primary transition-all"
+            :style="{ width: `${progressPercent}%` }"
+          />
         </div>
       </div>
       <Button :disabled="indexDisabled" @click="handleIndex">

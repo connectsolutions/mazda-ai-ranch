@@ -2,11 +2,15 @@ import { createServiceGetter } from '#common/composables/createServiceGetter';
 import type {
   ICreateKnowledgeInput,
   IGraph,
+  IImportJob,
   IKnowledge,
   IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IQueryResult,
   ISource,
+  ISourceContent,
+  ISourceFilter,
+  ISourcePage,
   IUpdateKnowledgeInput,
   KnowledgeQueryMode,
   KnowledgeService,
@@ -18,15 +22,30 @@ import type {
 export type {
   ICreateKnowledgeInput,
   IGraph,
+  IImportJob,
   IKnowledge,
   IKnowledgeRuntimeConfig,
   IKnowledgeSetupStatus,
   IndexStatus,
   IQueryResult,
   ISource,
+  ISourceContent,
+  ISourceFilter,
+  ISourcePage,
   IUpdateKnowledgeInput,
+  SourceIndexStatus,
   SourceType,
 } from '#reins/domain';
+
+/** An object URL plus what it points at; call `revoke()` when done with it. */
+export interface ISourcePreview {
+  url: string;
+  blob: Blob;
+  filename: string;
+  contentType: string;
+  size: number;
+  revoke: () => void;
+}
 
 const EMPTY_SETUP: IKnowledgeSetupStatus = {
   hasChatCredential: false,
@@ -113,8 +132,54 @@ export const useKnowledgeStore = defineStore('reins-knowledge', () => {
     return getService().query(id, q, mode, topK);
   }
 
-  function listSources(id: string) {
-    return getService().listSources(id);
+  function listSources(id: string, filter: ISourceFilter): Promise<ISourcePage> {
+    return getService().listSources(id, filter);
+  }
+
+  function listImports(id: string): Promise<IImportJob[]> {
+    return getService().listImports(id);
+  }
+
+  // Fetches the bytes with the Bearer header and hands back an object URL the
+  // preview sheet can iframe / the browser can open. The caller owns the URL.
+  async function previewSource(
+    id: string,
+    sourceId: string,
+  ): Promise<ISourcePreview> {
+    const content: ISourceContent = await getService().fetchSourceContent(
+      id,
+      sourceId,
+      'inline',
+    );
+    const url = URL.createObjectURL(content.blob);
+    return {
+      url,
+      blob: content.blob,
+      filename: content.filename,
+      contentType: content.contentType,
+      size: content.blob.size,
+      revoke: () => URL.revokeObjectURL(url),
+    };
+  }
+
+  async function downloadSource(id: string, sourceId: string): Promise<void> {
+    const content = await getService().fetchSourceContent(
+      id,
+      sourceId,
+      'attachment',
+    );
+    const url = URL.createObjectURL(content.blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = content.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      // Give the click a tick to start the download before pulling the URL.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   }
 
   function addTextSource(id: string, name: string, content: string) {
@@ -178,6 +243,9 @@ export const useKnowledgeStore = defineStore('reins-knowledge', () => {
     startIndex,
     query,
     listSources,
+    listImports,
+    previewSource,
+    downloadSource,
     addTextSource,
     addUrlSource,
     addFileSource,

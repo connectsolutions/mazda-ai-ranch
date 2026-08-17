@@ -22,6 +22,9 @@ function makeSource(overrides: Partial<ISourceData> = {}): ISourceData {
     content: 'Mazda CX-5 has a naturally aspirated engine.',
     sizeBytes: null,
     indexed: false,
+    indexStatus: 'pending',
+    indexError: null,
+    indexedAt: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -46,22 +49,31 @@ function failed(message: string): ITrackStatus {
   };
 }
 
+interface IRowPatch {
+  lightragDocId?: string | null;
+  indexError?: string | null;
+  indexedAt?: Date | null;
+}
+
+// Tracks the three columns indexSources writes, applying only the keys each
+// update actually sends - the way Prisma does - so a `{ indexError }` write
+// cannot be mistaken for clearing the doc id.
 function makePrismaStub(docIds: Record<string, string | null> = {}) {
+  const errors: Record<string, string | null> = {};
+  const indexedAt: Record<string, Date | null> = {};
   return {
     docIds,
+    errors,
+    indexedAt,
     source: {
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve({ lightragDocId: docIds[where.id] ?? null }),
       ),
       update: jest.fn(
-        ({
-          where,
-          data,
-        }: {
-          where: { id: string };
-          data: { lightragDocId: string | null };
-        }) => {
-          docIds[where.id] = data.lightragDocId;
+        ({ where, data }: { where: { id: string }; data: IRowPatch }) => {
+          if ('lightragDocId' in data) docIds[where.id] = data.lightragDocId!;
+          if ('indexError' in data) errors[where.id] = data.indexError!;
+          if ('indexedAt' in data) indexedAt[where.id] = data.indexedAt!;
           return Promise.resolve({ id: where.id });
         },
       ),
@@ -146,6 +158,41 @@ describe('SourceGateway.indexSources', () => {
       { sourceId: 'src-1', name: 'notes.txt', indexed: true, error: null },
     ]);
     expect(prisma.docIds['src-1']).toBe('track-1');
+    // The row itself remembers when it became searchable and drops any error.
+    expect(prisma.indexedAt['src-1']).toBeInstanceOf(Date);
+    expect(prisma.errors['src-1']).toBeNull();
+  });
+
+  it('records the failure on the row so the sources table can show it', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub([failed('embedding request rejected')]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    const run = gateway.indexSources([makeSource()]);
+    await jest.advanceTimersByTimeAsync(POLL_MS);
+    await run;
+
+    expect(prisma.errors['src-1']).toBe('embedding request rejected');
+    // Only the error is written; the doc id column is not touched at all.
+    expect('src-1' in prisma.docIds).toBe(false);
+  });
+
+  it('clears a leftover error once LightRAG confirms the document processed', async () => {
+    const prisma = makePrismaStub({ 'src-1': 'track-existing' });
+    const lightrag = makeLightragStub([processed()]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    await gateway.indexSources([
+      makeSource({
+        indexed: true,
+        indexStatus: 'indexed',
+        indexError: 'transient failure from an earlier run',
+      }),
+    ]);
+
+    // Otherwise a source that eventually converged stays red in the UI.
+    expect(prisma.errors['src-1']).toBeNull();
+    expect(prisma.docIds['src-1']).toBe('track-existing');
   });
 
   it('leaves the source unindexed and surfaces the reason when processing fails', async () => {

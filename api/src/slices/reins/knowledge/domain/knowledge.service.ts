@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { IKnowledgeGateway } from './knowledge.gateway';
 import {
   IKnowledgeData,
+  IKnowledgeRecord,
   ICreateKnowledgeData,
   IndexStatusTypes,
   IUpdateKnowledgeData,
@@ -17,6 +18,8 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const NO_SOURCES = { total: 0, indexed: 0, failed: 0 };
+
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name);
@@ -27,30 +30,71 @@ export class KnowledgeService {
     private readonly sources: SourceService,
   ) {}
 
-  list(): Promise<IKnowledgeData[]> {
-    return this.gateway.findAll();
+  async list(): Promise<IKnowledgeData[]> {
+    const records = await this.gateway.findAll();
+    return this.withCounts(records);
   }
 
   async get(id: string): Promise<IKnowledgeData> {
     const k = await this.gateway.findById(id);
     if (!k) throw new NotFoundException(`Knowledge ${id} not found`);
-    return k;
+    const [withCounts] = await this.withCounts([k]);
+    return withCounts;
   }
 
-  create(data: ICreateKnowledgeData): Promise<IKnowledgeData> {
-    return this.gateway.create(data);
+  async create(data: ICreateKnowledgeData): Promise<IKnowledgeData> {
+    const created = await this.gateway.create(data);
+    // Fresh row, nothing attached yet: no point in a round trip for zeros.
+    return this.attachCounts(created, NO_SOURCES);
   }
 
   async update(
     id: string,
     data: IUpdateKnowledgeData,
   ): Promise<IKnowledgeData> {
-    await this.get(id);
-    return this.gateway.update(id, data);
+    await this.requireRecord(id);
+    const updated = await this.gateway.update(id, data);
+    const [withCounts] = await this.withCounts([updated]);
+    return withCounts;
+  }
+
+  /** Existence check without the counts round trip that get() adds. */
+  private async requireRecord(id: string): Promise<IKnowledgeRecord> {
+    const k = await this.gateway.findById(id);
+    if (!k) throw new NotFoundException(`Knowledge ${id} not found`);
+    return k;
+  }
+
+  /**
+   * Source progress is owned by the source slice; ask it once for the whole
+   * batch so listing N knowledges costs one round of counts, not N.
+   */
+  private async withCounts(
+    records: IKnowledgeRecord[],
+  ): Promise<IKnowledgeData[]> {
+    if (records.length === 0) return [];
+    const counts = await this.sources.countByKnowledgeIds(
+      records.map((r) => r.id),
+    );
+    return records.map((r) =>
+      this.attachCounts(r, counts.get(r.id) ?? NO_SOURCES),
+    );
+  }
+
+  private attachCounts(
+    record: IKnowledgeRecord,
+    counts: { total: number; indexed: number; failed: number },
+  ): IKnowledgeData {
+    return {
+      ...record,
+      sourceCount: counts.total,
+      indexedCount: counts.indexed,
+      failedCount: counts.failed,
+    };
   }
 
   async delete(id: string): Promise<void> {
-    await this.get(id);
+    await this.requireRecord(id);
     try {
       await this.sources.removeAllByKnowledge(id);
     } catch (err) {
@@ -62,7 +106,7 @@ export class KnowledgeService {
   }
 
   async startIndex(knowledgeId: string): Promise<void> {
-    const k = await this.get(knowledgeId);
+    const k = await this.requireRecord(knowledgeId);
 
     if (k.indexStatus === 'indexing' && k.indexStartedAt) {
       const ageMs = Date.now() - k.indexStartedAt.getTime();
@@ -107,7 +151,7 @@ export class KnowledgeService {
     mode?: QueryModeTypes,
     topK?: number,
   ): Promise<IKnowledgeQueryResult> {
-    await this.get(knowledgeId);
+    await this.requireRecord(knowledgeId);
     return this.gateway.searchKnowledge(knowledgeId, query, mode, topK);
   }
 
