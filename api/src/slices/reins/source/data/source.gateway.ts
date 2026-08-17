@@ -5,6 +5,8 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { Readable } from 'stream';
 import { PrismaService } from '#/setup/prisma/prisma.service';
 import { S3Repository } from '#/aws/s3';
 import { IKnowledgeConfigGateway } from '../../config/domain/knowledgeConfig.gateway';
@@ -18,6 +20,10 @@ import { ISourceGateway } from '../domain/source.gateway';
 import {
   ISourceData,
   ICreateSourceData,
+  ISourceContent,
+  ISourceCounts,
+  ISourceFilter,
+  ISourcePage,
   IUploadSourceFileInput,
   IUploadSourceStreamInput,
   IUploadedSourceFile,
@@ -74,6 +80,30 @@ function adoptableDocId(message: string | null): string | null {
   return match[2].toLowerCase() === 'processed' ? match[1] : null;
 }
 
+/**
+ * Status filters in Prisma terms. `indexed` and `failed` are the two states
+ * with a recorded fact (doc id / error); `pending` is everything else. Kept
+ * in sync with deriveIndexStatus in the mapper.
+ */
+function whereForStatus(
+  status: ISourceFilter['status'],
+): Prisma.SourceWhereInput {
+  switch (status) {
+    case 'indexed':
+      return { lightragDocId: { not: null } };
+    case 'failed':
+      return { lightragDocId: null, indexError: { not: null } };
+    case 'pending':
+      return { lightragDocId: null, indexError: null };
+    case undefined:
+      return {};
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
+}
+
 @Injectable()
 export class SourceGateway extends ISourceGateway {
   private readonly logger = new Logger(SourceGateway.name);
@@ -125,6 +155,71 @@ export class SourceGateway extends ISourceGateway {
       orderBy: { createdAt: 'asc' },
     });
     return records.map((r) => this.mapper.toEntity(r));
+  }
+
+  async findPage(
+    knowledgeId: string,
+    filter: ISourceFilter,
+  ): Promise<ISourcePage> {
+    const search = filter.search?.trim();
+    const where: Prisma.SourceWhereInput = {
+      knowledgeId,
+      ...whereForStatus(filter.status),
+      ...(filter.type ? { type: filter.type } : {}),
+      ...(search
+        ? { name: { contains: search, mode: 'insensitive' as const } }
+        : {}),
+    };
+    // Oldest first, same as findByKnowledgeId: an import appends at the end,
+    // so page 1 keeps showing the same rows while a bulk import is running.
+    const [records, total] = await this.prisma.$transaction([
+      this.prisma.source.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip: (filter.page - 1) * filter.perPage,
+        take: filter.perPage,
+      }),
+      this.prisma.source.count({ where }),
+    ]);
+    return {
+      items: records.map((r) => this.mapper.toEntity(r)),
+      total,
+      page: filter.page,
+      perPage: filter.perPage,
+    };
+  }
+
+  async countByKnowledgeIds(
+    knowledgeIds: string[],
+  ): Promise<Map<string, ISourceCounts>> {
+    const counts = new Map<string, ISourceCounts>();
+    if (knowledgeIds.length === 0) return counts;
+
+    const groupCount = async (
+      extra: Prisma.SourceWhereInput,
+    ): Promise<Map<string, number>> => {
+      const rows = await this.prisma.source.groupBy({
+        by: ['knowledgeId'],
+        where: { knowledgeId: { in: knowledgeIds }, ...extra },
+        _count: { _all: true },
+      });
+      return new Map(rows.map((r) => [r.knowledgeId, r._count._all]));
+    };
+
+    const [total, indexed, failed] = await Promise.all([
+      groupCount({}),
+      groupCount(whereForStatus('indexed')),
+      groupCount(whereForStatus('failed')),
+    ]);
+
+    for (const [knowledgeId, count] of total) {
+      counts.set(knowledgeId, {
+        total: count,
+        indexed: indexed.get(knowledgeId) ?? 0,
+        failed: failed.get(knowledgeId) ?? 0,
+      });
+    }
+    return counts;
   }
 
   async findById(id: string): Promise<ISourceData | null> {
@@ -224,6 +319,44 @@ export class SourceGateway extends ISourceGateway {
     await this.s3.delete(location);
   }
 
+  async readContent(source: ISourceData): Promise<ISourceContent> {
+    if (source.type === 'text') {
+      const text = source.content ?? '';
+      const body = Buffer.from(text, 'utf8');
+      return {
+        filename: source.name.endsWith('.txt')
+          ? source.name
+          : `${source.name}.txt`,
+        contentType: 'text/plain; charset=utf-8',
+        contentLength: body.length,
+        body: Readable.from([body]),
+      };
+    }
+    if (source.type === 'file') {
+      if (!source.url) {
+        throw new NotFoundException(`Source ${source.id} has no stored file`);
+      }
+      const location = S3Repository.parseUri(source.url);
+      const object = await this.s3.getObjectStream(location);
+      return {
+        filename: source.name,
+        // The row's mime type was captured at upload time and is what the
+        // browser needs to pick a viewer; the S3 header is a fallback.
+        contentType:
+          source.mimeType ?? object.contentType ?? 'application/octet-stream',
+        contentLength: object.contentLength,
+        body: object.body,
+      };
+    }
+    if (source.type === 'url') {
+      throw new BadRequestException(
+        'url sources have no stored content; open the url directly',
+      );
+    }
+    const exhaustive: never = source.type;
+    throw new BadRequestException(`Unknown source type: ${String(exhaustive)}`);
+  }
+
   /**
    * Ingest only enqueues: LightRAG hands back a track id and builds chunks,
    * embeddings and the graph in a background pipeline afterwards. Storing that
@@ -250,6 +383,9 @@ export class SourceGateway extends ISourceGateway {
       const existing = await this.checkExistingIndex(source, known.byId);
 
       if (existing.kind === 'indexed') {
+        // Still good. A leftover error from an earlier run would keep the row
+        // red in the UI even though the content is searchable, so clear it.
+        if (source.indexError !== null) await this.clearError(source.id);
         outcomes.set(source.id, this.indexed(source));
         continue;
       }
@@ -261,7 +397,7 @@ export class SourceGateway extends ISourceGateway {
         continue;
       }
       if (existing.kind === 'unknown') {
-        outcomes.set(source.id, this.failed(source, existing.error));
+        outcomes.set(source.id, await this.fail(source, existing.error));
         continue;
       }
 
@@ -278,22 +414,24 @@ export class SourceGateway extends ISourceGateway {
         // a source that is, in fact, indexed - Ranch simply lost the id.
         const adopted = this.resolveStoredByName(message, known.byName);
         if (adopted !== null) {
-          await this.rememberDocId(source.id, adopted);
-          outcomes.set(source.id, this.indexed(source));
+          outcomes.set(source.id, await this.succeed(source, adopted));
           continue;
         }
 
-        outcomes.set(source.id, this.failed(source, message));
+        outcomes.set(source.id, await this.fail(source, message));
       }
     }
 
     await this.awaitProcessing(inFlight, outcomes);
 
-    return sources.map(
-      (s) =>
+    const results: ISourceIndexOutcome[] = [];
+    for (const s of sources) {
+      results.push(
         outcomes.get(s.id) ??
-        this.failed(s, 'LightRAG reported no state for this document'),
-    );
+          (await this.fail(s, 'LightRAG reported no state for this document')),
+      );
+    }
+    return results;
   }
 
   private failed(source: ISourceData, error: string): ISourceIndexOutcome {
@@ -307,6 +445,40 @@ export class SourceGateway extends ISourceGateway {
       indexed: true,
       error: null,
     };
+  }
+
+  /**
+   * Records the outcome on the row so the sources table can show what
+   * happened to each document, then returns the outcome for the run summary.
+   * `succeed` also stores the doc id, which is what flips `indexed`.
+   */
+  private async succeed(
+    source: ISourceData,
+    docId: string,
+  ): Promise<ISourceIndexOutcome> {
+    await this.prisma.source.update({
+      where: { id: source.id },
+      data: { lightragDocId: docId, indexedAt: new Date(), indexError: null },
+    });
+    return this.indexed(source);
+  }
+
+  private async fail(
+    source: ISourceData,
+    error: string,
+  ): Promise<ISourceIndexOutcome> {
+    await this.prisma.source.update({
+      where: { id: source.id },
+      data: { indexError: error },
+    });
+    return this.failed(source, error);
+  }
+
+  private async clearError(sourceId: string): Promise<void> {
+    await this.prisma.source.update({
+      where: { id: sourceId },
+      data: { indexError: null },
+    });
   }
 
   private async snapshotDocuments(): Promise<IDocumentSnapshot> {
@@ -347,13 +519,6 @@ export class SourceGateway extends ISourceGateway {
     const doc = byName.get(normalizeName(match[1]));
     if (doc === undefined || doc.status !== 'processed') return null;
     return doc.id;
-  }
-
-  private async rememberDocId(sourceId: string, docId: string): Promise<void> {
-    await this.prisma.source.update({
-      where: { id: sourceId },
-      data: { lightragDocId: docId },
-    });
   }
 
   /**
@@ -447,17 +612,13 @@ export class SourceGateway extends ISourceGateway {
             // next run would only reproduce.
             const adopted = adoptableDocId(failure.errorMessage);
             if (adopted !== null) {
-              await this.prisma.source.update({
-                where: { id: source.id },
-                data: { lightragDocId: adopted },
-              });
-              outcomes.set(source.id, this.indexed(source));
+              outcomes.set(source.id, await this.succeed(source, adopted));
               continue;
             }
 
             outcomes.set(
               source.id,
-              this.failed(
+              await this.fail(
                 source,
                 failure.errorMessage ?? 'LightRAG failed to process it',
               ),
@@ -467,16 +628,7 @@ export class SourceGateway extends ISourceGateway {
 
           if (status.documents.every((d) => d.status === 'processed')) {
             inFlight.delete(trackId);
-            await this.prisma.source.update({
-              where: { id: source.id },
-              data: { lightragDocId: trackId },
-            });
-            outcomes.set(source.id, {
-              sourceId: source.id,
-              name: source.name,
-              indexed: true,
-              error: null,
-            });
+            outcomes.set(source.id, await this.succeed(source, trackId));
           }
         } catch (err) {
           // Transient read failure. Leave it in flight and retry next tick;
@@ -492,7 +644,7 @@ export class SourceGateway extends ISourceGateway {
     for (const source of inFlight.values()) {
       outcomes.set(
         source.id,
-        this.failed(
+        await this.fail(
           source,
           `still processing after ${waitedMinutes} min - will retry on the next index run`,
         ),

@@ -11,9 +11,12 @@ model Source {
   content       String?
   sizeBytes     Int?
   lightragDocId String?
+  indexError    String?
+  indexedAt     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@index([knowledgeId])
+  @@index([knowledgeId, createdAt])
   @@index([lightragDocId])
 }

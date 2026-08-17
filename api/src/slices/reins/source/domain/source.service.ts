@@ -6,11 +6,17 @@ import {
 } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import { ISourceGateway } from './source.gateway';
+import { ImportJobRegistry } from './importJob.registry';
 import {
   IArchiveImportResult,
   IFilesImportResult,
+  IImportJob,
+  ISourceContent,
+  ISourceCounts,
   ISourceData,
+  ISourceFilter,
   ISourceIndexOutcome,
+  ISourcePage,
 } from './source.types';
 import { fetchSitemapUrls, SitemapError } from '../data/sitemap.fetcher';
 import {
@@ -40,10 +46,38 @@ function errorMessage(err: unknown): string {
 export class SourceService {
   private readonly logger = new Logger(SourceService.name);
 
-  constructor(private readonly gateway: ISourceGateway) {}
+  constructor(
+    private readonly gateway: ISourceGateway,
+    private readonly imports: ImportJobRegistry,
+  ) {}
 
   findByKnowledge(knowledgeId: string): Promise<ISourceData[]> {
     return this.gateway.findByKnowledgeId(knowledgeId);
+  }
+
+  findPage(knowledgeId: string, filter: ISourceFilter): Promise<ISourcePage> {
+    return this.gateway.findPage(knowledgeId, filter);
+  }
+
+  countByKnowledgeIds(
+    knowledgeIds: string[],
+  ): Promise<Map<string, ISourceCounts>> {
+    return this.gateway.countByKnowledgeIds(knowledgeIds);
+  }
+
+  async readContent(
+    knowledgeId: string,
+    sourceId: string,
+  ): Promise<ISourceContent> {
+    const source = await this.gateway.findById(sourceId);
+    if (!source || source.knowledgeId !== knowledgeId) {
+      throw new NotFoundException(`Source ${sourceId} not found`);
+    }
+    return this.gateway.readContent(source);
+  }
+
+  listImports(knowledgeId: string): IImportJob[] {
+    return this.imports.listByKnowledge(knowledgeId);
   }
 
   async addFile(
@@ -163,11 +197,11 @@ export class SourceService {
   /**
    * Accepts an already-saved zip on disk, lists its ingestable entries, and
    * kicks off a background import (one file-source per entry, streamed to
-   * S3). Returns immediately with the detected count so the HTTP request
-   * doesn't hang for the minutes a large archive takes. The caller-owned
-   * zip at zipPath is deleted once the background pass finishes. Indexing
-   * into LightRAG is NOT triggered here - that stays the explicit Index
-   * action.
+   * S3). Returns immediately with the detected count and a job id so the
+   * HTTP request doesn't hang for the minutes a large archive takes; the
+   * sources page polls the job for progress. The caller-owned zip at zipPath
+   * is deleted once the background pass finishes. Indexing into LightRAG is
+   * NOT triggered here - that stays the explicit Index action.
    */
   async addFromArchive(
     knowledgeId: string,
@@ -188,11 +222,13 @@ export class SourceService {
         'Archive contains no ingestable files (pdf, docx, xlsx, txt, html, ...).',
       );
     }
-    void this.runArchiveImport(knowledgeId, zipPath, entries);
-    return { detected: entries.length, started: true };
+    const job = this.imports.create(knowledgeId, 'archive', entries.length);
+    void this.runArchiveImport(job.id, knowledgeId, zipPath, entries);
+    return { detected: entries.length, started: true, jobId: job.id };
   }
 
   private async runArchiveImport(
+    jobId: string,
     knowledgeId: string,
     zipPath: string,
     entries: ArchiveEntry[],
@@ -200,6 +236,7 @@ export class SourceService {
     let added = 0;
     let skipped = 0;
     let failed = 0;
+    let crashed: string | null = null;
     try {
       const existing = await this.gateway.findByKnowledgeId(knowledgeId);
       const existingNames = new Set(
@@ -211,6 +248,7 @@ export class SourceService {
         const name = displayNameForEntry(entry.path);
         if (seenPaths.has(entry.path) || existingNames.has(name)) {
           skipped += 1;
+          this.imports.progress(jobId, { skipped: 1 });
           continue;
         }
         seenPaths.add(entry.path);
@@ -231,8 +269,13 @@ export class SourceService {
             sizeBytes: entry.size,
           });
           added += 1;
+          this.imports.progress(jobId, { added: 1 });
         } catch (err) {
           failed += 1;
+          this.imports.progress(jobId, {
+            failed: 1,
+            error: `${name}: ${errorMessage(err)}`,
+          });
           this.logger.warn(
             `archive entry failed ${entry.path}: ${errorMessage(err)}`,
           );
@@ -242,11 +285,21 @@ export class SourceService {
         `archive import for ${knowledgeId}: added=${added} skipped=${skipped} failed=${failed}`,
       );
     } catch (err) {
+      crashed = errorMessage(err);
       this.logger.error(
-        `archive import crashed for ${knowledgeId}: ${errorMessage(err)}`,
+        `archive import crashed for ${knowledgeId}: ${crashed}`,
       );
     } finally {
       await this.safeUnlink(zipPath);
+      if (crashed === null) {
+        this.imports.finish(jobId, 'done');
+      } else {
+        this.imports.finish(
+          jobId,
+          'failed',
+          `archive import crashed: ${crashed}`,
+        );
+      }
     }
   }
 

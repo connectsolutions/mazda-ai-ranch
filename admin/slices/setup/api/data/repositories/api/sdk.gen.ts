@@ -56,7 +56,13 @@ import type {
   QueryKnowledgeData,
   QueryKnowledgeResponse,
   GetKnowledgeSourcesData,
+  GetKnowledgeSourcesResponse,
   AddKnowledgeSourceData,
+  GetKnowledgeSourceImportsData,
+  GetKnowledgeSourceImportsResponse,
+  GetKnowledgeSourceContentData,
+  AddKnowledgeFileSourcesData,
+  AddKnowledgeFileSourcesResponse,
   AddKnowledgeSourcesFromSitemapData,
   AddKnowledgeSourcesFromSitemapResponse,
   AddKnowledgeSourcesFromArchiveData,
@@ -1149,13 +1155,13 @@ export class KnowledgesService {
 
 export class KnowledgeSourcesService {
   /**
-   * List sources
+   * List sources (paginated)
    */
   public static getKnowledgeSources<ThrowOnError extends boolean = false>(
     options: Options<GetKnowledgeSourcesData, ThrowOnError>,
   ) {
     return (options.client ?? _heyApiClient).get<
-      unknown,
+      GetKnowledgeSourcesResponse,
       unknown,
       ThrowOnError
     >({
@@ -1186,6 +1192,57 @@ export class KnowledgeSourcesService {
   }
 
   /**
+   * Background imports for this knowledge (running and recent)
+   * Progress of archive imports started through from-archive. Jobs are kept in memory for an hour after they finish.
+   */
+  public static getKnowledgeSourceImports<ThrowOnError extends boolean = false>(
+    options: Options<GetKnowledgeSourceImportsData, ThrowOnError>,
+  ) {
+    return (options.client ?? _heyApiClient).get<
+      GetKnowledgeSourceImportsResponse,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/knowledges/{knowledgeId}/sources/imports",
+      ...options,
+    });
+  }
+
+  /**
+   * Stream the stored bytes of a file or text source
+   * Streams the file straight from S3 (or the text body from the row). Not available for url sources - open the url itself.
+   */
+  public static getKnowledgeSourceContent<ThrowOnError extends boolean = false>(
+    options: Options<GetKnowledgeSourceContentData, ThrowOnError>,
+  ) {
+    return (options.client ?? _heyApiClient).get<
+      unknown,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/knowledges/{knowledgeId}/sources/{sourceId}/content",
+      ...options,
+    });
+  }
+
+  /**
+   * Add several file sources at once
+   * Accepts a multi-file selection (field "files") and creates one file-type source per upload. Runs inline and returns per-batch counts. Files whose name already exists on this knowledge are skipped; a single failed file does not abort the rest. Indexing into LightRAG happens through the normal reindex flow.
+   */
+  public static addKnowledgeFileSources<ThrowOnError extends boolean = false>(
+    options: Options<AddKnowledgeFileSourcesData, ThrowOnError>,
+  ) {
+    return (options.client ?? _heyApiClient).post<
+      AddKnowledgeFileSourcesResponse,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/knowledges/{knowledgeId}/sources/files",
+      ...options,
+    });
+  }
+
+  /**
    * Add url sources from a sitemap
    * Fetches a sitemap.xml (or sitemap-index), filters by optional URL prefix, then creates one url-type source per discovered page. Indexing into LightRAG happens through the normal reindex flow.
    */
@@ -1208,7 +1265,7 @@ export class KnowledgeSourcesService {
 
   /**
    * Bulk-import sources from a zip archive
-   * Accepts a .zip, extracts every ingestable file (pdf, docx, xlsx, txt, html, ...), and creates one file-type source per entry. Upload runs in the background and streams each entry to S3; the response returns immediately with the detected file count. Indexing into LightRAG happens through the normal reindex flow.
+   * Accepts a .zip, extracts every ingestable file (pdf, docx, xlsx, txt, html, ...), and creates one file-type source per entry. Upload runs in the background and streams each entry to S3; the response returns immediately with the detected file count and a job id to poll via GET .../sources/imports. Indexing into LightRAG happens through the normal reindex flow. Max size: KNOWLEDGE_ARCHIVE_MAX_BYTES (default 4 GiB).
    */
   public static addKnowledgeSourcesFromArchive<
     ThrowOnError extends boolean = false,

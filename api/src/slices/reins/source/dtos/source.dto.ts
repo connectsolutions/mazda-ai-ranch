@@ -1,5 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ISourceData, SourceTypes } from '../domain/source.types';
+import {
+  ISourceData,
+  SourceIndexStatusTypes,
+  SourceTypes,
+} from '../domain/source.types';
+
+export const SOURCE_INDEX_STATUSES: readonly SourceIndexStatusTypes[] = [
+  'indexed',
+  'pending',
+  'failed',
+];
 
 export class SourceDto implements ISourceData {
   @ApiProperty() id: string;
@@ -10,7 +20,19 @@ export class SourceDto implements ISourceData {
   @ApiProperty({ type: String, nullable: true }) mimeType: string | null;
   @ApiProperty({ type: String, nullable: true }) content: string | null;
   @ApiProperty({ type: Number, nullable: true }) sizeBytes: number | null;
-  @ApiProperty() indexed: boolean;
+  @ApiProperty({
+    description: 'True when indexStatus is "indexed". Kept for older callers.',
+  })
+  indexed: boolean;
+  @ApiProperty({ enum: SOURCE_INDEX_STATUSES })
+  indexStatus: SourceIndexStatusTypes;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Error from the last index run, null once the source indexes.',
+  })
+  indexError: string | null;
+  @ApiProperty({ type: String, nullable: true }) indexedAt: Date | null;
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
 }
