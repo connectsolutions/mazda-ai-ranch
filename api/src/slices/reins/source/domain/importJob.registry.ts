@@ -64,9 +64,10 @@ export class ImportJobRegistry {
     if (!job) return;
     job.status = status;
     job.finishedAt = new Date();
-    if (error !== undefined && job.errors.length < MAX_ERRORS) {
-      job.errors.push(error);
-    }
+    // The terminal reason always lands, even when per-entry errors already
+    // filled the cap: a job that shows "failed" with no explanation is worse
+    // than one line over.
+    if (error !== undefined) job.errors.push(error);
   }
 
   get(jobId: string): IImportJob | null {

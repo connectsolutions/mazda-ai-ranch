@@ -164,14 +164,7 @@ export class KnowledgeMapper {
         perPage: num(o.perPage) || requested.perPage,
       };
     }
-    // A bare array means an API build predating pagination: one page holds it all.
-    const items = this.toSourceList(raw);
-    return {
-      items,
-      total: items.length,
-      page: 1,
-      perPage: Math.max(items.length, requested.perPage),
-    };
+    return { items: [], total: 0, page: requested.page, perPage: requested.perPage };
   }
 
   toImportJob(raw: unknown): IImportJob | null {

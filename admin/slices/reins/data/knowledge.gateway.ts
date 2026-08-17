@@ -152,11 +152,11 @@ export class KnowledgeGateway extends BaseGateway implements IKnowledgeGateway {
     disposition: SourceContentDisposition,
   ): Promise<ISourceContent> {
     return this.execute(async () => {
-      const res = await apiClient.instance.get(
+      const res = await apiClient.instance.get<unknown>(
         `/knowledges/${id}/sources/${sourceId}/content`,
         { params: { disposition }, responseType: 'blob' },
       );
-      const blob = res.data as Blob;
+      const blob = res.data instanceof Blob ? res.data : new Blob([]);
       return {
         blob,
         filename: filenameFromDisposition(

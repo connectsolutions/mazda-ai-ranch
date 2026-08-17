@@ -8,8 +8,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from '#theme/components/ui/sheet';
-import type { ISource } from '#reins/stores/knowledge';
-import type { ISourcePreview } from '#reins/stores/knowledge';
+import type { ISource, ISourcePreview } from '#reins/stores/knowledge';
+import { formatBytes } from '#reins/domain';
 
 const props = defineProps<{
   knowledgeId: string;
@@ -23,6 +23,9 @@ const preview = ref<ISourcePreview | null>(null);
 const text = ref<string | null>(null);
 const loading = ref(false);
 const errorMessage = ref<string | null>(null);
+// URLs handed to "Open in new tab". Revoking one while that tab still loads
+// would blank it, so they outlive the sheet and go on unmount only.
+const externalUrls: string[] = [];
 
 type PreviewKind = 'frame' | 'text' | 'none';
 
@@ -63,12 +66,18 @@ async function load(source: ISource) {
   loading.value = true;
   try {
     const p = await store.previewSource(props.knowledgeId, source.id);
+    // The user may have clicked another row (or closed the sheet) while this
+    // one was in flight; a stale response must neither show nor leak its URL.
+    if (props.source?.id !== source.id) {
+      p.revoke();
+      return;
+    }
     preview.value = p;
     if (kindFor(p.contentType) === 'text') {
-      // Fetch the object URL back as text; the blob is already local.
-      text.value = await (await fetch(p.url)).text();
+      text.value = await p.blob.text();
     }
   } catch (err: unknown) {
+    if (props.source?.id !== source.id) return;
     const e = err as {
       response?: { data?: { message?: string } };
       message?: string;
@@ -76,7 +85,7 @@ async function load(source: ISource) {
     errorMessage.value =
       e?.response?.data?.message ?? e?.message ?? 'Could not load this source';
   } finally {
-    loading.value = false;
+    if (props.source?.id === source.id) loading.value = false;
   }
 }
 
@@ -89,22 +98,23 @@ watch(
   { immediate: true },
 );
 
-onBeforeUnmount(reset);
+onBeforeUnmount(() => {
+  reset();
+  for (const url of externalUrls) URL.revokeObjectURL(url);
+  externalUrls.length = 0;
+});
 
 function openInNewTab() {
   if (!preview.value) return;
-  window.open(preview.value.url, '_blank', 'noopener');
+  // Fresh URL for the other tab so closing this sheet cannot pull it away.
+  const url = URL.createObjectURL(preview.value.blob);
+  externalUrls.push(url);
+  window.open(url, '_blank', 'noopener');
 }
 
 async function download() {
   if (!props.source) return;
   await store.downloadSource(props.knowledgeId, props.source.id);
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 </script>
 

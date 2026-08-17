@@ -8,6 +8,7 @@ import type {
   SourceIndexStatus,
   SourceType,
 } from '#reins/stores/knowledge';
+import { formatBytes } from '#reins/domain';
 import { Button } from '#theme/components/ui/button';
 import { Input } from '#theme/components/ui/input';
 import {
@@ -72,6 +73,7 @@ watch([searchDebounced, status, type], () => {
 const {
   data: pageData,
   pending,
+  error: listError,
   refresh: reloadPage,
 } = await useAsyncData(
   () => `knowledge-sources-${knowledgeId.value}`,
@@ -163,13 +165,6 @@ async function onAdded() {
 
 // ---- formatting ------------------------------------------------------------
 
-function formatBytes(size: number | null): string {
-  if (size === null) return '-';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function formatDate(iso: string): string {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -224,6 +219,10 @@ function formatDate(iso: string): string {
         <template v-if="pending"> · updating…</template>
       </span>
     </div>
+
+    <p v-if="listError" class="text-sm text-destructive">
+      Could not load sources: {{ listError.message }}
+    </p>
 
     <div v-if="rows.length" class="rounded-md border bg-card">
       <Table>
@@ -301,7 +300,7 @@ function formatDate(iso: string): string {
     </div>
 
     <div
-      v-else-if="!pending"
+      v-else-if="!pending && !listError"
       class="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground"
     >
       <template v-if="hasFilter">No sources match these filters.</template>

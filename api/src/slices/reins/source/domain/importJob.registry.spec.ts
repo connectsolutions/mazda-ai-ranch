@@ -76,4 +76,18 @@ describe('ImportJobRegistry', () => {
     });
     expect(registry.get(job.id)?.finishedAt).toBeInstanceOf(Date);
   });
+
+  it('keeps the terminal reason even when the per-entry error cap is full', () => {
+    const registry = new ImportJobRegistry();
+    const job = registry.create('k-1', 'archive', 40);
+    for (let i = 0; i < 30; i += 1) {
+      registry.progress(job.id, { failed: 1, error: `f${i}: boom` });
+    }
+
+    registry.finish(job.id, 'failed', 'archive import crashed: disk full');
+
+    const errors = registry.get(job.id)?.errors ?? [];
+    expect(errors).toHaveLength(21);
+    expect(errors.at(-1)).toBe('archive import crashed: disk full');
+  });
 });

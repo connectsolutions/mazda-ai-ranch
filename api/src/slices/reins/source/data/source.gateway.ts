@@ -397,7 +397,11 @@ export class SourceGateway extends ISourceGateway {
         continue;
       }
       if (existing.kind === 'unknown') {
-        outcomes.set(source.id, await this.fail(source, existing.error));
+        // Could not reach LightRAG to verify a claim we still hold. The row
+        // keeps its doc id (it may well be fine), so writing an error here
+        // would be invisible behind an "indexed" status; report it for this
+        // run's summary only.
+        outcomes.set(source.id, this.failed(source, existing.error));
         continue;
       }
 

@@ -40,6 +40,7 @@ export type {
 /** An object URL plus what it points at; call `revoke()` when done with it. */
 export interface ISourcePreview {
   url: string;
+  blob: Blob;
   filename: string;
   contentType: string;
   size: number;
@@ -153,6 +154,7 @@ export const useKnowledgeStore = defineStore('reins-knowledge', () => {
     const url = URL.createObjectURL(content.blob);
     return {
       url,
+      blob: content.blob,
       filename: content.filename,
       contentType: content.contentType,
       size: content.blob.size,

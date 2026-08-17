@@ -52,10 +52,17 @@ export class KnowledgeService {
     id: string,
     data: IUpdateKnowledgeData,
   ): Promise<IKnowledgeData> {
-    await this.get(id);
+    await this.requireRecord(id);
     const updated = await this.gateway.update(id, data);
     const [withCounts] = await this.withCounts([updated]);
     return withCounts;
+  }
+
+  /** Existence check without the counts round trip that get() adds. */
+  private async requireRecord(id: string): Promise<IKnowledgeRecord> {
+    const k = await this.gateway.findById(id);
+    if (!k) throw new NotFoundException(`Knowledge ${id} not found`);
+    return k;
   }
 
   /**
@@ -87,7 +94,7 @@ export class KnowledgeService {
   }
 
   async delete(id: string): Promise<void> {
-    await this.get(id);
+    await this.requireRecord(id);
     try {
       await this.sources.removeAllByKnowledge(id);
     } catch (err) {
@@ -99,7 +106,7 @@ export class KnowledgeService {
   }
 
   async startIndex(knowledgeId: string): Promise<void> {
-    const k = await this.get(knowledgeId);
+    const k = await this.requireRecord(knowledgeId);
 
     if (k.indexStatus === 'indexing' && k.indexStartedAt) {
       const ageMs = Date.now() - k.indexStartedAt.getTime();
@@ -144,7 +151,7 @@ export class KnowledgeService {
     mode?: QueryModeTypes,
     topK?: number,
   ): Promise<IKnowledgeQueryResult> {
-    await this.get(knowledgeId);
+    await this.requireRecord(knowledgeId);
     return this.gateway.searchKnowledge(knowledgeId, query, mode, topK);
   }
 

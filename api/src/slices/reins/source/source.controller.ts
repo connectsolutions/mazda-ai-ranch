@@ -26,6 +26,7 @@ import type { Response } from 'express';
 import { diskStorage } from 'multer';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
+import { pipeline } from 'stream/promises';
 import { SourceService } from './domain/source.service';
 import { archiveMaxBytes } from './domain/archiveLimit';
 import { UploadLimitInterceptor } from './uploadLimit.interceptor';
@@ -149,12 +150,16 @@ export class SourceController {
     }
     // Let the admin read the filename back off the blob response.
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    content.body.on('error', (err: Error) => {
-      // Headers may already be out; the most we can do is cut the socket so
-      // the client sees a truncated download instead of a "complete" one.
-      res.destroy(err);
-    });
-    content.body.pipe(res);
+    // pipeline() (unlike .pipe()) tears down the S3 stream when the client
+    // aborts, so a cancelled preview does not leak an SDK socket. Once headers
+    // are out an error can only cut the response short, which is what we want:
+    // a truncated download rather than a "complete" one.
+    try {
+      await pipeline(content.body, res);
+    } catch (err) {
+      if (!res.headersSent) throw err;
+      res.destroy();
+    }
   }
 
   @Post()
@@ -270,7 +275,14 @@ export class SourceController {
         filename: (_req, _file, cb) =>
           cb(null, `ranch-knowledge-archive-${randomUUID()}.zip`),
       }),
-      limits: { fileSize: archiveMaxBytes() },
+      // A getter, not a value: this decorator runs at import time, before
+      // ConfigModule has loaded .env.dev into process.env. busboy reads the
+      // limit per request, so resolving lazily picks up the configured value.
+      limits: {
+        get fileSize(): number {
+          return archiveMaxBytes();
+        },
+      },
     }),
   )
   async addFromArchive(
