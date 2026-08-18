@@ -5,6 +5,7 @@ import type {
   IKnowledge,
   ISource,
   ISourceFilter,
+  ISourcePage,
   SourceIndexStatus,
   SourceType,
 } from '#reins/stores/knowledge';
@@ -70,16 +71,48 @@ watch([searchDebounced, status, type], () => {
   page.value = 1;
 });
 
-const {
-  data: pageData,
-  pending,
-  error: listError,
-  refresh: reloadPage,
-} = await useAsyncData(
-  () => `knowledge-sources-${knowledgeId.value}`,
-  () => store.listSources(knowledgeId.value, filter.value),
-  { watch: [filter] },
-);
+// ---- list ------------------------------------------------------------------
+
+// Plain state rather than useAsyncData: this list is mutated from the page
+// itself (add / delete / import / index) and has to reflect a write that just
+// happened. useAsyncData caches per key in a payload shared across the app and
+// neutralizes an entry once its last consumer unmounts, so a refresh() right
+// after a mutation could resolve against a stale or detached entry and leave
+// the table showing the pre-write list until a full page reload.
+const pageData = ref<ISourcePage | null>(null);
+const loading = ref(false);
+const listError = ref<string | null>(null);
+
+// Only the newest request may write to the state: filter changes and the 3s
+// poll can overlap, and a slow earlier response must not overwrite a newer one.
+let loadToken = 0;
+
+async function load(): Promise<void> {
+  const token = (loadToken += 1);
+  loading.value = true;
+  try {
+    const result = await store.listSources(knowledgeId.value, filter.value);
+    if (token !== loadToken) return;
+    pageData.value = result;
+    listError.value = null;
+  } catch (err: unknown) {
+    if (token !== loadToken) return;
+    const e = err as {
+      response?: { data?: { message?: string } };
+      message?: string;
+    };
+    listError.value =
+      e?.response?.data?.message ?? e?.message ?? 'Could not load sources';
+  } finally {
+    if (token === loadToken) loading.value = false;
+  }
+}
+
+await load();
+
+watch(filter, () => {
+  void load();
+});
 
 const rows = computed<ISource[]>(() => pageData.value?.items ?? []);
 const total = computed(() => pageData.value?.total ?? 0);
@@ -118,7 +151,7 @@ const indexing = computed(() => current?.value?.indexStatus === 'indexing');
 // underneath the user, so keep it fresh; go quiet the moment it stops.
 const { pause, resume } = useIntervalFn(
   async () => {
-    await Promise.all([reloadPage(), reloadImports()]);
+    await Promise.all([load(), reloadImports()]);
     if (indexing.value && refresh) await refresh();
   },
   3000,
@@ -150,7 +183,7 @@ async function handleDelete(source: ISource) {
   });
   if (!ok) return;
   await store.removeSource(knowledgeId.value, source.id);
-  await reloadPage();
+  await load();
   if (refresh) await refresh();
 }
 
@@ -159,7 +192,13 @@ async function handleDownload(source: ISource) {
 }
 
 async function onAdded() {
-  await Promise.all([reloadPage(), reloadImports()]);
+  // The new rows land at the end of the list (oldest first), so a user sitting
+  // on a later page or a filter would not see them; go back to a clean view.
+  search.value = '';
+  status.value = 'all';
+  type.value = 'all';
+  page.value = 1;
+  await Promise.all([load(), reloadImports()]);
   if (refresh) await refresh();
 }
 
@@ -216,12 +255,12 @@ function formatDate(iso: string): string {
       </Select>
       <span class="ml-auto text-sm text-muted-foreground">
         {{ total }} source{{ total === 1 ? '' : 's' }}
-        <template v-if="pending"> · updating…</template>
+        <template v-if="loading"> · updating…</template>
       </span>
     </div>
 
     <p v-if="listError" class="text-sm text-destructive">
-      Could not load sources: {{ listError.message }}
+      Could not load sources: {{ listError }}
     </p>
 
     <div v-if="rows.length" class="rounded-md border bg-card">
@@ -300,7 +339,7 @@ function formatDate(iso: string): string {
     </div>
 
     <div
-      v-else-if="!pending && !listError"
+      v-else-if="!loading && !listError"
       class="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground"
     >
       <template v-if="hasFilter">No sources match these filters.</template>
