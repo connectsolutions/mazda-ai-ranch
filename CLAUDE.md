@@ -88,6 +88,20 @@ There is no vue-tsc; the frontends only get syntax-checked when Vite transforms 
 Fetching `http://localhost:3001/_nuxt/slices/<slice>/<file>` forces that transform for a
 file without clicking through the UI (admin needs a login for most pages).
 
+`useAsyncData` is a poor fit for a list the same page mutates (add / delete /
+background poll). Its entries live in an app-wide cache keyed by string, get
+neutralized when the last consumer unmounts (`purgeCachedData`), and `refresh()`
+re-enters the "initial" path once that happens. Slices that own their data keep a
+plain `ref` plus an explicit `load()` and a token guard against out-of-order
+responses; keep `useAsyncData` for read-only views.
+
+Anything heavy and synchronous belongs off the main thread: `forceAtlas2.assign`
+over a graph of any size froze the tab for ~15s until it moved to
+`graphology-layout-forceatlas2/worker`. That worker is built by stringifying a
+function into a Blob URL, which survives the Vite production bundle - worth
+re-checking in `admin/.output/public/_nuxt/` after any bundler change, since a
+dev-only regression here is invisible until production.
+
 ## Running the API without a global `node`
 
 `nest start` under Bun (which `bun run` substitutes when `node` is absent from PATH) resolves
