@@ -9,8 +9,13 @@ import { IDynamicallyDescribedTool } from '#/mcp/interfaces/dynamic-description.
 import { KnowledgeService } from './domain/knowledge.service';
 import { IKnowledgeGateway } from './domain/knowledge.gateway';
 
+// The batching sentence is not stylistic advice: one call spends several
+// seconds inside the knowledge service composing an answer, and the service
+// serves them concurrently. Measured on a ten-question request, asking one at
+// a time took 198s of retrieval where the same ten issued together took 35s.
+// Without saying so, models ask sequentially and the user waits for the sum.
 const BASE_DESCRIPTION =
-  'Search your bound knowledge bases for factual information. MUST be called FIRST, before drafting any response, when the user asks about a topic that could plausibly be covered by your bound knowledge bases (see the list below). Do NOT hedge with phrases like "isn\'t explicitly detailed" or "based on what I know" before calling this tool - drafting an answer first and then querying is a bug, it wastes the user\'s time and produces a confusing two-phase response. Prefer this over web_search for anything that could be in user-uploaded content. Returns matched content with citations. The knowledge_id parameter is optional - omit it to search across all your bound bases at once.';
+  'Search your bound knowledge bases for factual information. MUST be called FIRST, before drafting any response, when the user asks about a topic that could plausibly be covered by your bound knowledge bases (see the list below). Do NOT hedge with phrases like "isn\'t explicitly detailed" or "based on what I know" before calling this tool - drafting an answer first and then querying is a bug, it wastes the user\'s time and produces a confusing two-phase response. When the request contains several independent questions, issue all of those calls in the same turn rather than one after another: they are answered concurrently, so batching turns minutes of waiting into seconds. Prefer this over web_search for anything that could be in user-uploaded content. Returns matched content with citations. The knowledge_id parameter is optional - omit it to search across all your bound bases at once.';
 
 interface ToolResult {
   content: { type: 'text'; text: string }[];
