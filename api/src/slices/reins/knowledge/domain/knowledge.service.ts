@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { IKnowledgeGateway } from './knowledge.gateway';
 import {
   IKnowledgeData,
@@ -21,7 +26,7 @@ function errorMessage(err: unknown): string {
 const NO_SOURCES = { total: 0, indexed: 0, failed: 0 };
 
 @Injectable()
-export class KnowledgeService {
+export class KnowledgeService implements OnModuleInit {
   private readonly logger = new Logger(KnowledgeService.name);
   private readonly inflightIndexing = new Map<string, Promise<void>>();
 
@@ -29,6 +34,43 @@ export class KnowledgeService {
     private readonly gateway: IKnowledgeGateway,
     private readonly sources: SourceService,
   ) {}
+
+  /**
+   * An index run lives in this process and nowhere else, so a deploy or a
+   * crash takes it with it while the row keeps saying `indexing`. Nothing ever
+   * cleared that, and since the admin disables the Index button on `indexing`,
+   * the base became unindexable until someone called the API by hand.
+   *
+   * Whatever this process finds in `indexing` at startup therefore belongs to
+   * a run that no longer exists: release it. LightRAG keeps working on
+   * whatever was already handed to it, and the sources keep their resume
+   * handles, so the next run continues rather than starting over.
+   */
+  async onModuleInit(): Promise<void> {
+    let released = 0;
+    try {
+      const records = await this.gateway.findAll();
+      for (const record of records) {
+        if (record.indexStatus !== 'indexing') continue;
+        await this.gateway.updateIndexState(record.id, {
+          indexStatus: record.indexedAt ? 'ready' : 'idle',
+        });
+        released += 1;
+      }
+    } catch (err) {
+      // Never block API startup over this: a stuck badge is survivable, a
+      // boot loop is not.
+      this.logger.warn(
+        `could not release abandoned index runs: ${errorMessage(err)}`,
+      );
+      return;
+    }
+    if (released > 0) {
+      this.logger.warn(
+        `released ${released} knowledge base(s) left in 'indexing' by a previous process`,
+      );
+    }
+  }
 
   async list(): Promise<IKnowledgeData[]> {
     const records = await this.gateway.findAll();
@@ -172,13 +214,23 @@ export class KnowledgeService {
       // what makes the Index button a real retry instead of a no-op.
       const outcomes = await this.sources.indexSources(sources);
 
-      const failures = outcomes.filter((o) => !o.indexed);
+      const failures = outcomes.filter((o) => o.status === 'failed');
+      const stillProcessing = outcomes.filter((o) => o.status === 'pending');
       for (const failure of failures) {
         this.logger.warn(
           `indexing failed for ${failure.sourceId} (${failure.name}): ${failure.error ?? 'unknown error'}`,
         );
       }
+      if (stillProcessing.length > 0) {
+        this.logger.log(
+          `${stillProcessing.length} source(s) still in LightRAG's pipeline; the next run will confirm them`,
+        );
+      }
 
+      // Only genuine failures go into indexError. Documents the run stopped
+      // waiting for are not errors: LightRAG is still working on them, they
+      // show as `pending` on their own rows, and painting the whole base red
+      // over them is what made every large re-index look like an outage.
       const summary =
         failures.length === 0
           ? null
@@ -186,13 +238,16 @@ export class KnowledgeService {
               .slice(0, 5)
               .map((f) => `${f.name} (${f.error ?? 'unknown error'})`)
               .join('; ')}${failures.length > 5 ? '; ...' : ''}`;
-      const indexedCount = outcomes.length - failures.length;
+      const indexedCount = outcomes.filter((o) => o.indexed).length;
       // 'ready' means LightRAG confirmed at least one document as processed,
       // or the base is empty (nothing to do is trivially ready). Accepting an
       // upload is not enough: that is what used to show `ready` on a base with
-      // an empty graph that answered every query with no context.
+      // an empty graph that answered every query with no context. A run that
+      // only has documents left in the pipeline is not a failed run either -
+      // it failed nothing, so it does not get the failed badge.
+      const nothingWorked = indexedCount === 0 && stillProcessing.length === 0;
       const status: IndexStatusTypes =
-        indexedCount > 0 || sources.length === 0 ? 'ready' : 'failed';
+        nothingWorked && sources.length > 0 ? 'failed' : 'ready';
       await this.gateway.updateIndexState(knowledgeId, {
         indexStatus: status,
         // Bump indexedAt only when something is actually searchable now.

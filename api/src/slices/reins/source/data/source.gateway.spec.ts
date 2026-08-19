@@ -155,7 +155,13 @@ describe('SourceGateway.indexSources', () => {
     const outcomes = await run;
 
     expect(outcomes).toEqual([
-      { sourceId: 'src-1', name: 'notes.txt', indexed: true, error: null },
+      {
+        sourceId: 'src-1',
+        name: 'notes.txt',
+        status: 'indexed',
+        indexed: true,
+        error: null,
+      },
     ]);
     expect(prisma.docIds['src-1']).toBe('track-1');
     // The row itself remembers when it became searchable and drops any error.
@@ -173,8 +179,11 @@ describe('SourceGateway.indexSources', () => {
     await run;
 
     expect(prisma.errors['src-1']).toBe('embedding request rejected');
-    // Only the error is written; the doc id column is not touched at all.
-    expect('src-1' in prisma.docIds).toBe(false);
+    // The resume handle from ingest stays put; it is what lets the next run
+    // ask LightRAG about this document instead of uploading it again.
+    expect(prisma.docIds['src-1']).toBe('track-1');
+    // Nothing was confirmed, so the row is not searchable.
+    expect(prisma.indexedAt['src-1']).toBeUndefined();
   });
 
   it('clears a leftover error once LightRAG confirms the document processed', async () => {
@@ -208,12 +217,14 @@ describe('SourceGateway.indexSources', () => {
       {
         sourceId: 'src-1',
         name: 'notes.txt',
+        status: 'failed',
         indexed: false,
         error: 'embedding request rejected',
       },
     ]);
-    // No doc id persisted, so `indexed` stays false and the next run retries.
-    expect(prisma.docIds['src-1']).toBeUndefined();
+    // No confirmation timestamp, so `indexed` stays false and the next run
+    // retries after checking what LightRAG did with the handle.
+    expect(prisma.indexedAt['src-1']).toBeUndefined();
   });
 
   it('re-ingests a source that claims to be indexed when LightRAG has nothing for it', async () => {
@@ -241,7 +252,13 @@ describe('SourceGateway.indexSources', () => {
 
     expect(lightrag.ingestText).not.toHaveBeenCalled();
     expect(outcomes).toEqual([
-      { sourceId: 'src-1', name: 'notes.txt', indexed: true, error: null },
+      {
+        sourceId: 'src-1',
+        name: 'notes.txt',
+        status: 'indexed',
+        indexed: true,
+        error: null,
+      },
     ]);
     expect(prisma.docIds['src-1']).toBe('track-existing');
   });
@@ -275,6 +292,7 @@ describe('SourceGateway.indexSources', () => {
     expect(outcomes[0]).toEqual({
       sourceId: 'src-1',
       name: 'notes.txt',
+      status: 'indexed',
       indexed: true,
       error: null,
     });
@@ -292,9 +310,9 @@ describe('SourceGateway.indexSources', () => {
     await jest.advanceTimersByTimeAsync(POLL_MS);
     const outcomes = await run;
 
-    expect(outcomes[0].indexed).toBe(false);
+    expect(outcomes[0].status).toBe('failed');
     expect(outcomes[0].error).toContain('Identical content already exists');
-    expect(prisma.docIds['src-1']).toBeUndefined();
+    expect(prisma.indexedAt['src-1']).toBeUndefined();
   });
 
   it('resolves an adopted doc id through the document snapshot', async () => {
@@ -345,6 +363,7 @@ describe('SourceGateway.indexSources', () => {
     expect(outcomes[0]).toEqual({
       sourceId: 'src-1',
       name: 'notes.txt',
+      status: 'indexed',
       indexed: true,
       error: null,
     });
@@ -372,7 +391,7 @@ describe('SourceGateway.indexSources', () => {
     expect(prisma.docIds['src-1']).toBeUndefined();
   });
 
-  it('gives up after the timeout and reports the source as retryable', async () => {
+  it('reports a document still in the pipeline as pending, not failed', async () => {
     const prisma = makePrismaStub();
     const lightrag = makeLightragStub([stillProcessing()]);
     const gateway = makeGateway(prisma, lightrag);
@@ -381,8 +400,39 @@ describe('SourceGateway.indexSources', () => {
     await jest.advanceTimersByTimeAsync(TIMEOUT_MS + POLL_MS);
     const outcomes = await run;
 
+    // The run stopped waiting; LightRAG did not stop working. Calling this a
+    // failure is what painted a healthy re-index of a large base red.
+    expect(outcomes[0].status).toBe('pending');
     expect(outcomes[0].indexed).toBe(false);
     expect(outcomes[0].error).toContain('still processing');
-    expect(prisma.docIds['src-1']).toBeUndefined();
+    // The handle is kept so the next run resumes the wait rather than
+    // uploading a second copy, and no error is left on the row.
+    expect(prisma.docIds['src-1']).toBe('track-1');
+    expect(prisma.errors['src-1']).toBeNull();
+    expect(prisma.indexedAt['src-1']).toBeUndefined();
+  });
+
+  it('waits for a stored document the refusal reports as still processing', async () => {
+    const prisma = makePrismaStub();
+    const lightrag = makeLightragStub(
+      [processed()],
+      [{ id: 'doc-stored', status: 'processing', filePath: 'notes.txt' }],
+    );
+    // Same 409 as the adopt-by-filename case, but the stored copy has not
+    // finished yet. Reporting a failure here made every overlapping run red
+    // even though the document was minutes away from being searchable.
+    lightrag.ingestText.mockRejectedValueOnce(
+      new Error(
+        `LightRAG /documents/upload failed: 409 {"detail":"Document storage already contains 'notes.txt' (Status: processing)."}`,
+      ),
+    );
+    const gateway = makeGateway(prisma, lightrag);
+
+    const run = gateway.indexSources([makeSource()]);
+    await jest.advanceTimersByTimeAsync(POLL_MS);
+    const outcomes = await run;
+
+    expect(outcomes[0].status).toBe('indexed');
+    expect(prisma.docIds['src-1']).toBe('doc-stored');
   });
 });

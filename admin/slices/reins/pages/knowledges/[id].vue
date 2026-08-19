@@ -61,11 +61,18 @@ async function handleIndex() {
 
   // Re-indexing is what costs money (LLM over every unindexed document), and
   // people were pressing it "to be sure". Say exactly what will happen first.
+  //
+  // The count is a floor, not a promise: it is derived from what Ranch has
+  // recorded, while the run asks LightRAG about every source and re-sends
+  // whatever it no longer holds. After the LightRAG index is cleared this
+  // dialog said "42 of 210" and then sent all 210, so the wording has to admit
+  // that rather than quote a number it cannot guarantee.
   const total = current.value.sourceCount;
-  const description =
+  const knownWork =
     toIndex.value === 0
-      ? `All ${total} source${total === 1 ? ' is' : 's are'} already indexed. This run will only re-verify them against LightRAG and re-send anything it no longer holds; nothing new is billed unless something has to be re-ingested.`
-      : `${toIndex.value} of ${total} source${total === 1 ? '' : 's'} will be sent through the LLM (${current.value.failedCount} failed earlier, ${toIndex.value - current.value.failedCount} never indexed). Already-indexed sources are only re-checked. This costs money and can take a while on a large base.`;
+      ? `All ${total} source${total === 1 ? ' is' : 's are'} marked indexed, so this run may only re-verify them.`
+      : `At least ${toIndex.value} of ${total} source${total === 1 ? '' : 's'} will go through the LLM (${current.value.failedCount} failed earlier, ${toIndex.value - current.value.failedCount} never confirmed).`;
+  const description = `${knownWork} Every source is re-checked against LightRAG, and any it no longer holds is sent again - if the LightRAG index was cleared, that means all ${total}. This costs money and can take a while on a large base.`;
 
   const ok = await confirmStore.ask({
     title: `Index ${current.value.name}?`,
