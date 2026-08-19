@@ -18,15 +18,18 @@ function parseSourceType(value: string): SourceTypes {
 }
 
 /**
- * A processed doc id wins over any leftover error: LightRAG confirmed the
- * content is searchable, whatever an earlier run said. Only a source with no
- * doc id and a recorded error is failed; no id and no error is pending.
+ * `indexedAt` is the only proof that LightRAG finished the document, and it
+ * wins over any leftover error from an earlier run. `lightragDocId` is
+ * deliberately NOT consulted: it is written as soon as ingest is accepted so a
+ * later run can resume the wait instead of re-uploading, which means a row can
+ * hold an id while the pipeline is still chewing. Treating that id as proof is
+ * what showed a base as fully indexed while its graph was still being built.
  */
 export function deriveIndexStatus(record: {
-  lightragDocId: string | null;
+  indexedAt: Date | null;
   indexError: string | null;
 }): SourceIndexStatusTypes {
-  if (record.lightragDocId !== null) return 'indexed';
+  if (record.indexedAt !== null) return 'indexed';
   if (record.indexError !== null) return 'failed';
   return 'pending';
 }

@@ -62,13 +62,24 @@ export interface ISourceContent {
 
 /**
  * Result of pushing one source through LightRAG's ingest-then-process
- * pipeline. `indexed` is true only once LightRAG reports the document as
- * processed, i.e. actually searchable.
+ * pipeline.
+ *
+ * Three states, not two. `failed` means LightRAG rejected the document or the
+ * pipeline gave up on it, and a human should look. `pending` means the run
+ * stopped waiting before LightRAG finished - the document is still being
+ * processed and the next run will pick it up. Collapsing the two is what
+ * painted a healthy re-index of a large base red: on a base of 200 documents
+ * the wait budget expires long before the pipeline does.
  */
+export type SourceIndexOutcomeStatus = 'indexed' | 'pending' | 'failed';
+
 export interface ISourceIndexOutcome {
   sourceId: string;
   name: string;
+  status: SourceIndexOutcomeStatus;
+  /** Kept for callers that only care about searchable-or-not. */
   indexed: boolean;
+  /** Set for `failed`, and for `pending` as the reason the wait ended. */
   error: string | null;
 }
 

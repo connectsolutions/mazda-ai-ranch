@@ -82,19 +82,20 @@ function adoptableDocId(message: string | null): string | null {
 
 /**
  * Status filters in Prisma terms. `indexed` and `failed` are the two states
- * with a recorded fact (doc id / error); `pending` is everything else. Kept
- * in sync with deriveIndexStatus in the mapper.
+ * with a recorded fact (confirmation timestamp / error); `pending` is
+ * everything else, including a document still moving through the pipeline.
+ * Kept in sync with deriveIndexStatus in the mapper.
  */
 function whereForStatus(
   status: ISourceFilter['status'],
 ): Prisma.SourceWhereInput {
   switch (status) {
     case 'indexed':
-      return { lightragDocId: { not: null } };
+      return { indexedAt: { not: null } };
     case 'failed':
-      return { lightragDocId: null, indexError: { not: null } };
+      return { indexedAt: null, indexError: { not: null } };
     case 'pending':
-      return { lightragDocId: null, indexError: null };
+      return { indexedAt: null, indexError: null };
     case undefined:
       return {};
     default: {
@@ -408,17 +409,26 @@ export class SourceGateway extends ISourceGateway {
       try {
         const workspace = workspaceOf(source.knowledgeId);
         const trackId = await this.ingestByType(source, workspace);
+        // Persist the handle before waiting on it. If this run dies (deploy,
+        // crash, budget) the next one resumes from here instead of uploading
+        // the same file again.
+        await this.rememberHandle(source.id, trackId);
         inFlight.set(trackId, source);
       } catch (err) {
         const message = errorMessage(err);
 
         // LightRAG refuses an upload whose filename it already stores, and
-        // says so with the filename only. When that stored document is
-        // processed the content is searchable, so claim it instead of failing
-        // a source that is, in fact, indexed - Ranch simply lost the id.
-        const adopted = this.resolveStoredByName(message, known.byName);
-        if (adopted !== null) {
-          outcomes.set(source.id, await this.succeed(source, adopted));
+        // says so with the filename only. Whether that is good news depends on
+        // the stored document: processed means the content is searchable and
+        // Ranch merely lost the id, still-moving means we should wait for it
+        // rather than call the source broken.
+        const stored = this.resolveStoredByName(message, known.byName);
+        if (stored?.status === 'processed') {
+          outcomes.set(source.id, await this.succeed(source, stored.id));
+          continue;
+        }
+        if (stored !== null && stored.status !== 'failed') {
+          inFlight.set(stored.id, source);
           continue;
         }
 
@@ -439,13 +449,33 @@ export class SourceGateway extends ISourceGateway {
   }
 
   private failed(source: ISourceData, error: string): ISourceIndexOutcome {
-    return { sourceId: source.id, name: source.name, indexed: false, error };
+    return {
+      sourceId: source.id,
+      name: source.name,
+      status: 'failed',
+      indexed: false,
+      error,
+    };
+  }
+
+  private stillProcessing(
+    source: ISourceData,
+    reason: string,
+  ): ISourceIndexOutcome {
+    return {
+      sourceId: source.id,
+      name: source.name,
+      status: 'pending',
+      indexed: false,
+      error: reason,
+    };
   }
 
   private indexed(source: ISourceData): ISourceIndexOutcome {
     return {
       sourceId: source.id,
       name: source.name,
+      status: 'indexed',
       indexed: true,
       error: null,
     };
@@ -476,6 +506,25 @@ export class SourceGateway extends ISourceGateway {
       data: { indexError: error },
     });
     return this.failed(source, error);
+  }
+
+  /**
+   * The document is in LightRAG's pipeline and this run stopped waiting for
+   * it. Storing the handle is what makes the next run resume the wait instead
+   * of re-uploading the file and colliding with the copy already in there; the
+   * row stays `pending` because `indexedAt` is untouched, and any error from
+   * an earlier attempt goes away since nothing is wrong with it right now.
+   */
+  private async markInFlight(
+    source: ISourceData,
+    handle: string,
+    reason: string,
+  ): Promise<ISourceIndexOutcome> {
+    await this.prisma.source.update({
+      where: { id: source.id },
+      data: { lightragDocId: handle, indexError: null },
+    });
+    return this.stillProcessing(source, reason);
   }
 
   private async clearError(sourceId: string): Promise<void> {
@@ -509,20 +558,29 @@ export class SourceGateway extends ISourceGateway {
   }
 
   /**
-   * Pulls the filename out of LightRAG's refusal and returns the id of the
-   * stored document, but only when that document is processed. A stored
-   * document that failed is worth nothing, and claiming it would hide a real
-   * problem behind a green badge.
+   * Pulls the filename out of LightRAG's refusal and returns the document it
+   * refers to, status included. The caller decides what that status is worth:
+   * a processed document can be adopted outright, one still in the pipeline is
+   * worth waiting for, and a failed one is left to be reported.
    */
   private resolveStoredByName(
     message: string,
     byName: Map<string, IDocumentRecord>,
-  ): string | null {
+  ): IDocumentRecord | null {
     const match = ALREADY_STORED.exec(message);
     if (match === null) return null;
-    const doc = byName.get(normalizeName(match[1]));
-    if (doc === undefined || doc.status !== 'processed') return null;
-    return doc.id;
+    return byName.get(normalizeName(match[1])) ?? null;
+  }
+
+  /** Stores the resume handle without claiming the document is searchable. */
+  private async rememberHandle(
+    sourceId: string,
+    handle: string,
+  ): Promise<void> {
+    await this.prisma.source.update({
+      where: { id: sourceId },
+      data: { lightragDocId: handle },
+    });
   }
 
   /**
@@ -535,8 +593,10 @@ export class SourceGateway extends ISourceGateway {
     source: ISourceData,
     known: Map<string, DocumentProcessingStatusTypes>,
   ): Promise<IExistingIndexCheck> {
-    if (!source.indexed) return { kind: 'stale' };
-
+    // Ask about any source that carries a handle, not only ones we call
+    // indexed: the handle is written at ingest time, so a source left pending
+    // by an earlier run has one too, and that is exactly the case where
+    // re-uploading would collide with the copy already in the pipeline.
     const record = await this.prisma.source.findUnique({
       where: { id: source.id },
       select: { lightragDocId: true },
@@ -645,12 +705,13 @@ export class SourceGateway extends ISourceGateway {
     }
 
     const waitedMinutes = Math.round(budgetMs / 60000);
-    for (const source of inFlight.values()) {
+    for (const [handle, source] of inFlight) {
       outcomes.set(
         source.id,
-        await this.fail(
+        await this.markInFlight(
           source,
-          `still processing after ${waitedMinutes} min - will retry on the next index run`,
+          handle,
+          `still processing after ${waitedMinutes} min - the next index run will pick it up`,
         ),
       );
     }
