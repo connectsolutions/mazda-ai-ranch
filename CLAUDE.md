@@ -135,9 +135,21 @@ Terraform in `terraform/environments/<env>` owns the Hetzner infrastructure.
 
 Related slices worth knowing before touching agent behavior: `bridle` (chat sessions and
 streaming, transcripts stored as JSONL in S3/MinIO rather than Postgres), `reins`
-(knowledge/RAG over LightRAG), `mcp` (MCP runtime served at `/mcp/*` via `@Tool`
-decorators), `mcpServer` (registry of external MCP servers), `browser` (browserless pool;
-see `api/src/slices/browser/README.md`).
+(knowledge/RAG over LightRAG; see `api/src/slices/reins/README.md`), `mcp` (MCP runtime
+served at `/mcp/*` via `@Tool` decorators), `mcpServer` (registry of external MCP servers),
+`browser` (browserless pool; see `api/src/slices/browser/README.md`).
+
+Read the reins README before touching indexing or changing a LightRAG model. Two of its
+findings are invisible from the code and each has already cost a day: LightRAG ignores the
+per-request `workspace` Ranch sends (isolation is per instance, so every knowledge base
+shares one index and one query scope), and its LLM cache is keyed by chunk and prompt but
+not by model, so re-indexing after a model swap silently replays the old model's answers
+until `lightrag_llm_cache` is truncated.
+
+An index run lives in the API process: it is not resumable across a restart, so anything
+long-running there has to leave enough on the row for the next run to continue. `Source`
+does this with `lightragDocId` as a resume handle written at ingest and `indexedAt` as the
+only proof of success - a doc id alone means "handed to LightRAG", never "searchable".
 
 ## API response shape and CORS
 
