@@ -1,6 +1,6 @@
 {
   "name": "ranch",
-  "version": "0.3.25",
+  "version": "0.3.33",
   "private": true,
   "packageManager": "bun@1.2.12",
   "workspaces": [
@@ -13,12 +13,16 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "test": "turbo test",
+    "typecheck": "turbo typecheck --filter=app --filter=admin",
     "dev:api": "turbo dev --filter=api",
     "dev:app": "turbo dev --filter=app",
     "dev:admin": "turbo dev --filter=admin",
+    "i18n:sync": "bun scripts/i18n-sync.ts",
+    "i18n:check": "bun scripts/i18n-sync.ts --check",
     "release": "npm version --message 'chore(release): v%s'"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
     "turbo": "^2"
   },
   "dependencies": {

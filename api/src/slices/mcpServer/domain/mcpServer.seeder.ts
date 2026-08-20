@@ -34,6 +34,9 @@ export class McpServerSeeder implements OnApplicationBootstrap {
 
   async onApplicationBootstrap() {
     const ranchUrl = await this.resolveRanchMcpUrl();
+    // The Streamable HTTP endpoint lives at /mcp — the bare origin 404s
+    // ("Cannot POST /"), which used to leave every agent with 0 CleanSlice
+    // tools and a scary connect-failed line in its startup log.
     const cleansliceUrl =
       this.config.get<string>('CLEANSLICE_MCP_URL') ??
       'https://mcp.cleanslice.org/mcp';

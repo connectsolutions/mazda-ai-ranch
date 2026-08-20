@@ -28,10 +28,12 @@ import { AgentStatusTypes } from './domain/agent.types';
 import { AgentStatusService } from './domain/agentStatus.service';
 import { AgentDeployService } from './domain/agentDeploy.service';
 import {
+  AgentDto,
   AgentMcpDto,
   AgentEnvVarDto,
   AgentMetricsDto,
   AgentStatusDto,
+  ClusterCapacityDto,
   CreateAgentDto,
   UpdateAgentDto,
 } from './dtos';
@@ -101,11 +103,25 @@ export class AgentController {
         agent.workflowId,
       );
       const mapped = PHASE_TO_STATUS[phase];
-      if (mapped === 'failed' && agent.status !== 'failed') {
+      // This can only ever be the CURRENT workflow: restart detaches the old
+      // workflow id before cancelling it and stop clears it, so a terminal
+      // phase here is a definitive failure of the in-flight deploy — not a
+      // stale echo of a cancelled run.
+      //
+      // Bridle-truth wins (same rule as the drift sweep): if the runtime is
+      // actively connected to the chat hub, the agent IS up no matter what
+      // the workflow record claims — writing 'failed' here would ping-pong
+      // the status against the reconciler's 'running' on every poll.
+      if (
+        mapped === 'failed' &&
+        agent.status !== 'failed' &&
+        !this.bridleHub.isAgentConnected(agentId)
+      ) {
         await this.agentGateway.updateStatus(
           agentId,
           'failed',
           agent.workflowId,
+          `deploy workflow ${phase.toLowerCase()}`,
         );
         return this.agentGateway.findById(agentId);
       }
@@ -121,6 +137,7 @@ export class AgentController {
     summary:
       'List all agents. Public — landing/chat pages render without auth. Mutations and details still require login.',
   })
+  @ApiOkResponse({ type: AgentDto, isArray: true })
   findAll() {
     return this.agentGateway.findAll();
   }
@@ -131,6 +148,7 @@ export class AgentController {
     summary:
       'List agents flagged as public. Used by the marketing landing page so private agents stay hidden from unauthenticated visitors.',
   })
+  @ApiOkResponse({ type: AgentDto, isArray: true })
   findPublic() {
     return this.agentGateway.findPublic();
   }
@@ -157,12 +175,30 @@ export class AgentController {
       .pipe(map((data) => ({ data }) as MessageEvent));
   }
 
+  @Get('capacity')
+  @Roles(UserRoleTypes.Owner, UserRoleTypes.Admin)
+  @ApiOperation({
+    operationId: 'getClusterCapacity',
+    summary:
+      'How many more agents fit on the cluster. Free schedulable CPU/memory ' +
+      'on node-role=agents nodes divided by the fixed agent request floor ' +
+      '(100m / 512Mi), minus agents still deploying without a pod. Cached ' +
+      '~15s; null when the Kubernetes API is unreachable. Admin or Owner — ' +
+      'the only roles that can act on the number, and the response reveals ' +
+      'node topology.',
+  })
+  @ApiOkResponse({ type: ClusterCapacityDto })
+  getClusterCapacity(): Promise<ClusterCapacityDto | null> {
+    return this.agentStatusService.getCapacity();
+  }
+
   @Get(':id')
   @Public()
   @ApiOperation({
     summary:
       'Get agent by ID. Public — chat needs agent metadata (name, status) to render.',
   })
+  @ApiOkResponse({ type: AgentDto })
   async findById(@Param('id') id: string) {
     const agent = await this.syncStatus(id);
     if (!agent) throw new NotFoundException('Agent not found');
@@ -305,13 +341,10 @@ export class AgentController {
       const previous = await this.agentGateway.findAdmin();
       if (previous && previous.id !== agent.id) {
         await this.agentGateway.setAdmin(previous.id, false);
-        try {
-          await this.workflowService.cancelAgentWorkflow(previous.workflowId);
-        } catch (err) {
-          this.logger.warn(
-            `Cancel workflow failed for previous admin ${previous.id}: ${(err as Error).message}`,
-          );
-        }
+        await this.agentDeployService.detachAndCancelWorkflow(
+          previous.id,
+          previous.workflowId,
+        );
         await this.deploy(previous.id);
       }
       await this.agentGateway.setAdmin(agent.id, true);
@@ -356,22 +389,13 @@ export class AgentController {
     const previous = await this.agentGateway.findAdmin();
     await this.agentGateway.setAdmin(id, true);
     if (previous && previous.id !== id) {
-      try {
-        await this.workflowService.cancelAgentWorkflow(previous.workflowId);
-      } catch (err) {
-        this.logger.warn(
-          `Cancel workflow failed for previous admin ${previous.id}: ${(err as Error).message}`,
-        );
-      }
+      await this.agentDeployService.detachAndCancelWorkflow(
+        previous.id,
+        previous.workflowId,
+      );
       await this.deploy(previous.id);
     }
-    try {
-      await this.workflowService.cancelAgentWorkflow(agent.workflowId);
-    } catch (err) {
-      this.logger.warn(
-        `Cancel workflow failed for agent ${id}: ${(err as Error).message}`,
-      );
-    }
+    await this.agentDeployService.detachAndCancelWorkflow(id, agent.workflowId);
     await this.deploy(id);
     return this.agentGateway.findById(id);
   }
@@ -386,13 +410,7 @@ export class AgentController {
     const agent = await this.agentGateway.findById(id);
     if (!agent) throw new NotFoundException('Agent not found');
     await this.agentGateway.setAdmin(id, false);
-    try {
-      await this.workflowService.cancelAgentWorkflow(agent.workflowId);
-    } catch (err) {
-      this.logger.warn(
-        `Cancel workflow failed for agent ${id}: ${(err as Error).message}`,
-      );
-    }
+    await this.agentDeployService.detachAndCancelWorkflow(id, agent.workflowId);
     await this.deploy(id);
     return this.agentGateway.findById(id);
   }

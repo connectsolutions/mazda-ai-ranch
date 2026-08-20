@@ -14,15 +14,31 @@ const { data: agents, pending } = await useAsyncData(
 const runningCount = computed(
   () => (agents.value ?? []).filter((a) => a.status === 'running').length,
 );
+
+// Cluster headroom — fetched only for roles that can act on it (also avoids
+// 403 noise for plain users). Store actions (create/remove/restart) refetch
+// on their own; the interval catches everyone else's changes and pods
+// actually scheduling. The backend caches ~15s, so polling is cheap.
+const capacity = computed(() => agentStore.capacity);
+
+let capacityTimer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  if (!canCreate.value) return;
+  void agentStore.fetchCapacity();
+  capacityTimer = setInterval(() => void agentStore.fetchCapacity(), 30_000);
+});
+onUnmounted(() => {
+  if (capacityTimer) clearInterval(capacityTimer);
+});
 </script>
 
 <template>
   <div class="flex flex-col gap-6">
     <header class="flex flex-wrap items-end justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight">Agents</h1>
+        <h1 class="text-2xl font-bold tracking-tight">{{ $t('list.title') }}</h1>
         <p class="mt-1 text-sm text-muted-foreground">
-          Click a card to chat. Live runtime status updates as agents come online.
+          {{ $t('list.lede') }}
         </p>
       </div>
 
@@ -41,8 +57,33 @@ const runningCount = computed(
               :class="runningCount > 0 ? 'bg-emerald-500' : 'bg-muted-foreground'"
             />
           </span>
-          <span class="font-medium text-foreground">{{ runningCount }}</span>
-          / {{ agents.length }} running
+          <!-- The running count keeps its own emphasis, so it comes in as a
+               slot rather than a plain parameter — the sentence stays one
+               translatable string either way. -->
+          <i18n-t keypath="list.running_of" tag="span">
+            <template #running>
+              <span class="font-medium text-foreground">{{ runningCount }}</span>
+            </template>
+            <template #total>{{ agents.length }}</template>
+          </i18n-t>
+          <template v-if="canCreate && capacity">
+            <span class="text-muted-foreground/60">·</span>
+            <span
+              :class="
+                capacity.freeAgentSlots === 0
+                  ? 'font-medium text-amber-600'
+                  : ''
+              "
+            >
+              {{
+                $t(
+                  'list.slots_free',
+                  { count: capacity.freeAgentSlots },
+                  capacity.freeAgentSlots,
+                )
+              }}
+            </span>
+          </template>
         </div>
 
         <NuxtLink
@@ -51,10 +92,26 @@ const runningCount = computed(
           class="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium shadow-sm hover:opacity-95 transition"
         >
           <Icon name="plus" :size="14" />
-          Create Agent
+          {{ $t('list.create') }}
         </NuxtLink>
       </div>
     </header>
+
+    <!-- Capacity is a ~15s-stale estimate, so this warns rather than blocks:
+         creating is still legal, the pod just waits Pending for a slot. -->
+    <div
+      v-if="canCreate && capacity?.freeAgentSlots === 0"
+      class="flex items-center gap-1.5 text-xs text-amber-600"
+    >
+      <Icon name="alert-triangle" :size="14" class="shrink-0" />
+      {{
+        $t(
+          capacity.totalAgentSlots === 0
+            ? 'list.cluster_no_nodes'
+            : 'list.cluster_full',
+        )
+      }}
+    </div>
 
     <!-- Loading skeletons (initial load only — refresh keeps existing list visible) -->
     <div
@@ -97,10 +154,9 @@ const runningCount = computed(
       >
         <Icon name="bot" :size="22" />
       </div>
-      <h2 class="mt-4 text-base font-semibold">No agents yet</h2>
+      <h2 class="mt-4 text-base font-semibold">{{ $t('list.empty_title') }}</h2>
       <p class="mt-1 text-sm text-muted-foreground max-w-sm mx-auto">
-        Spin up your first AI worker — it'll appear here and you can chat with
-        it in real time.
+        {{ $t('list.empty_hint') }}
       </p>
       <NuxtLink
         v-if="canCreate"
@@ -108,13 +164,13 @@ const runningCount = computed(
         class="mt-5 inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-95 transition"
       >
         <Icon name="plus" :size="14" />
-        Create your first agent
+        {{ $t('list.empty_cta') }}
       </NuxtLink>
       <p
         v-else
         class="mt-5 text-xs text-muted-foreground/70"
       >
-        Ask an Admin or Owner to deploy one.
+        {{ $t('list.empty_no_permission') }}
       </p>
     </div>
   </div>

@@ -8,8 +8,10 @@ import type {
   IAgentEnvVar,
   IAgentMetrics,
   IAgentResources,
+  IClusterCapacityData,
   ICreateAgentData,
   IUpdateAgentData,
+  LaunchContextTypes,
 } from '../domain/agent.types';
 
 const KNOWN_STATUSES = new Set<AgentStatusTypes>([
@@ -18,6 +20,11 @@ const KNOWN_STATUSES = new Set<AgentStatusTypes>([
   'running',
   'failed',
   'stopped',
+]);
+
+const KNOWN_LAUNCH_CONTEXTS = new Set<LaunchContextTypes>([
+  'initial',
+  'restart',
 ]);
 
 function num(value: unknown): number {
@@ -49,7 +56,11 @@ export class AgentMapper {
       llmCredentialId:
         typeof o.llmCredentialId === 'string' ? o.llmCredentialId : null,
       status: this.toStatus(o.status),
+      statusReason: typeof o.statusReason === 'string' ? o.statusReason : null,
       workflowId: typeof o.workflowId === 'string' ? o.workflowId : null,
+      firstDeployedAt:
+        typeof o.firstDeployedAt === 'string' ? o.firstDeployedAt : null,
+      launchContext: this.toLaunchContext(o.launchContext),
       config:
         o.config && typeof o.config === 'object'
           ? (o.config as Record<string, unknown>)
@@ -70,6 +81,39 @@ export class AgentMapper {
     return raw
       .map((item) => this.toEntity(item))
       .filter((a): a is IAgentData => a !== null);
+  }
+
+  toCapacity(raw: unknown): IClusterCapacityData | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const o = raw as Record<string, unknown>;
+    if (
+      typeof o.freeAgentSlots !== 'number' ||
+      typeof o.usedAgentSlots !== 'number' ||
+      typeof o.totalAgentSlots !== 'number'
+    ) {
+      return null;
+    }
+    let maxNodeFreeCpuMilli = 0;
+    let maxNodeFreeMemBytes = 0;
+    for (const item of Array.isArray(o.nodes) ? o.nodes : []) {
+      if (!item || typeof item !== 'object') continue;
+      const node = item as Record<string, unknown>;
+      if (typeof node.freeCpuMilli === 'number') {
+        maxNodeFreeCpuMilli = Math.max(maxNodeFreeCpuMilli, node.freeCpuMilli);
+      }
+      if (typeof node.freeMemBytes === 'number') {
+        maxNodeFreeMemBytes = Math.max(maxNodeFreeMemBytes, node.freeMemBytes);
+      }
+    }
+    return {
+      freeAgentSlots: o.freeAgentSlots,
+      usedAgentSlots: o.usedAgentSlots,
+      totalAgentSlots: o.totalAgentSlots,
+      slotCpuMilli: num(o.slotCpuMilli),
+      slotMemBytes: num(o.slotMemBytes),
+      maxNodeFreeCpuMilli,
+      maxNodeFreeMemBytes,
+    };
   }
 
   toMetrics(raw: unknown): IAgentMetrics | null {
@@ -117,6 +161,13 @@ export class AgentMapper {
     return typeof raw === 'string' && KNOWN_STATUSES.has(raw as AgentStatusTypes)
       ? (raw as AgentStatusTypes)
       : 'pending';
+  }
+
+  private toLaunchContext(raw: unknown): LaunchContextTypes | null {
+    return typeof raw === 'string' &&
+      KNOWN_LAUNCH_CONTEXTS.has(raw as LaunchContextTypes)
+      ? (raw as LaunchContextTypes)
+      : null;
   }
 
   private toResources(raw: unknown): IAgentResources {

@@ -146,3 +146,11 @@ export interface IFilesImportResult {
   /** One `"<filename>: <reason>"` line per failed upload. */
   errors: string[];
 }
+
+export interface IFilesImportResult {
+  added: number;
+  skipped: number;
+  failed: number;
+  /** One `"<filename>: <reason>"` line per failed upload. */
+  errors: string[];
+}

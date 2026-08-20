@@ -818,6 +818,119 @@ export const AddFromArchiveResultDtoSchema = {
   required: ["detected", "started", "jobId"],
 } as const;
 
+export const AgentDtoSchema = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+    },
+    name: {
+      type: "string",
+    },
+    templateId: {
+      type: "string",
+    },
+    llmCredentialId: {
+      type: "object",
+      nullable: true,
+    },
+    status: {
+      type: "string",
+      enum: ["pending", "deploying", "running", "failed", "stopped"],
+    },
+    statusReason: {
+      type: "string",
+      nullable: true,
+      description: `Human-readable reason accompanying status='failed' (e.g. "startup did not produce a running agent within 5 minutes", "ImagePullBackOff"). Null for all other statuses and for failures recorded before this field existed.`,
+    },
+    workflowId: {
+      type: "object",
+      nullable: true,
+    },
+    firstDeployedAt: {
+      type: "string",
+      nullable: true,
+      description:
+        "When this agent was first successfully deployed. Null ⇒ the agent has never been deployed.",
+    },
+    lastDeployStartedAt: {
+      type: "string",
+      nullable: true,
+      description:
+        "When the current/last deploy was started. Anchor of the server-side deploy grace window.",
+    },
+    launchContext: {
+      type: "string",
+      nullable: true,
+      enum: ["initial", "restart"],
+      description:
+        "Why the current/last deploy ran: 'initial' = first-ever start, 'restart' = any subsequent deploy (restart, start after stop, config-change redeploy). Null only for agents never deployed since this field existed.",
+    },
+    config: {
+      type: "object",
+    },
+    resources: {
+      type: "object",
+    },
+    debugEnabled: {
+      type: "boolean",
+      description:
+        "When true, the agent runtime emits prompt-debug snapshots to admin clients via the bridle hub.",
+    },
+    isPublic: {
+      type: "boolean",
+      description:
+        "When true, the agent is visible on the public landing page to unauthenticated visitors.",
+    },
+    allowedOrigins: {
+      description:
+        "Origins (scheme + host + port) authorized to open browser WebSockets to this bot without a JWT. Only consulted when isPublic=true.",
+      example: ["https://bridle.cleanslice.org", "http://localhost:5173"],
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    knowledgeIds: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+    },
+    isAdmin: {
+      type: "boolean",
+    },
+    createdAt: {
+      format: "date-time",
+      type: "string",
+    },
+    updatedAt: {
+      format: "date-time",
+      type: "string",
+    },
+  },
+  required: [
+    "id",
+    "name",
+    "templateId",
+    "status",
+    "statusReason",
+    "workflowId",
+    "firstDeployedAt",
+    "lastDeployStartedAt",
+    "launchContext",
+    "config",
+    "resources",
+    "debugEnabled",
+    "isPublic",
+    "allowedOrigins",
+    "knowledgeIds",
+    "isAdmin",
+    "createdAt",
+    "updatedAt",
+  ],
+} as const;
+
 export const AgentPodStatusDtoSchema = {
   type: "object",
   properties: {
@@ -884,8 +997,12 @@ export const AgentStatusDtoSchema = {
   type: "object",
   properties: {
     agent: {
-      type: "object",
-      description: "Agent DB record (id, name, status, etc.)",
+      description: "Agent DB record (id, name, status, launchContext, etc.)",
+      allOf: [
+        {
+          $ref: "#/components/schemas/AgentDto",
+        },
+      ],
     },
     pod: {
       nullable: true,
@@ -899,6 +1016,83 @@ export const AgentStatusDtoSchema = {
     },
   },
   required: ["agent", "pod"],
+} as const;
+
+export const NodeCapacityDtoSchema = {
+  type: "object",
+  properties: {
+    name: {
+      type: "string",
+      example: "k3s-agent-gnk",
+    },
+    freeCpuMilli: {
+      type: "number",
+      example: 3200,
+      description: "Allocatable CPU minus summed pod requests, in millicores",
+    },
+    freeMemBytes: {
+      type: "number",
+      example: 6442450944,
+      description: "Allocatable memory minus summed pod requests, in bytes",
+    },
+    freeSlots: {
+      type: "number",
+      example: 12,
+      description: "How many more agent pods fit on this node",
+    },
+  },
+  required: ["name", "freeCpuMilli", "freeMemBytes", "freeSlots"],
+} as const;
+
+export const ClusterCapacityDtoSchema = {
+  type: "object",
+  properties: {
+    freeAgentSlots: {
+      type: "number",
+      example: 12,
+      description:
+        "How many more agents can start right now, across all agent nodes",
+    },
+    usedAgentSlots: {
+      type: "number",
+      example: 8,
+      description: "Agents currently holding a slot (live pods + deploying)",
+    },
+    totalAgentSlots: {
+      type: "number",
+      example: 20,
+      description: "usedAgentSlots + freeAgentSlots under current cluster load",
+    },
+    slotCpuMilli: {
+      type: "number",
+      example: 100,
+      description: "CPU request one agent slot reserves, in millicores",
+    },
+    slotMemBytes: {
+      type: "number",
+      example: 536870912,
+      description: "Memory request one agent slot reserves, in bytes",
+    },
+    nodes: {
+      type: "array",
+      items: {
+        $ref: "#/components/schemas/NodeCapacityDto",
+      },
+    },
+    observedAt: {
+      type: "string",
+      example: "2026-07-29T12:00:00.000Z",
+    },
+  },
+  required: [
+    "freeAgentSlots",
+    "usedAgentSlots",
+    "totalAgentSlots",
+    "slotCpuMilli",
+    "slotMemBytes",
+    "nodes",
+    "observedAt",
+  ],
 } as const;
 
 export const AgentPodMetricsDtoSchema = {
@@ -1731,6 +1925,23 @@ export const AgentChannelDtoSchema = {
     },
     config: {
       $ref: "#/components/schemas/TelegramChannelConfigDto",
+    },
+    connected: {
+      type: "boolean",
+      nullable: true,
+      description:
+        "Live state reported by the runtime (data/channels/status.json). true = polling/connected, false = last start attempt failed (see statusReason), null = unknown (no status reported yet). Read-only — ignored on PUT.",
+    },
+    statusReason: {
+      type: "string",
+      nullable: true,
+      description:
+        "Failure reason when connected=false (e.g. an invalid token). Read-only.",
+    },
+    statusUpdatedAt: {
+      type: "number",
+      nullable: true,
+      description: "Unix ms of the last status change. Read-only.",
     },
   },
   required: ["type", "config"],
