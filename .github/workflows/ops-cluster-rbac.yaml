@@ -1,0 +1,61 @@
+# Manually-triggered ops helper: applies the ranch-api RBAC manifests to the
+# cluster using the same KUBECONFIG_B64 the deploy job uses, then prints the
+# diagnostics needed to debug GET /agents/capacity (permissions, node labels,
+# recent API errors). Idempotent — safe to run any time; ArgoCD tracks the
+# same manifest path so the applied content can never drift from the repo.
+
+name: Ops - apply RBAC & diagnose capacity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply-and-diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl version --client=true
+
+      - name: Apply API RBAC
+        run: kubectl apply -f k8s/platform/api/rbac.yaml
+
+      - name: Verify ranch-api service-account permissions
+        run: |
+          sa=system:serviceaccount:platform:ranch-api
+          echo "list nodes:            $(kubectl auth can-i list nodes --as=$sa)"
+          echo "list pods (all ns):    $(kubectl auth can-i list pods --all-namespaces --as=$sa)"
+          echo "get nodes/proxy:       $(kubectl auth can-i get nodes/proxy --as=$sa)"
+
+      - name: Show node labels (capacity counts only node-role=agents)
+        run: kubectl get nodes -L node-role
+
+      - name: Recent capacity/permission errors in API logs
+        run: |
+          kubectl -n platform logs deploy/ranch-api --tail=2000 \
+            | grep -iE "capacity|forbidden" | tail -20 \
+            || echo "no capacity/forbidden lines in the last 2000 log lines"
+
+      # usedAgentSlots counts every live pod labeled app=ranch-agent, cluster
+      # wide. If this list is longer than the agents table, the extras are
+      # orphans from old deploys still holding 512Mi each.
+      - name: List live agent pods (compare against the agents table)
+        run: |
+          kubectl get pods -A -l app=ranch-agent -o wide --sort-by=.metadata.creationTimestamp
+          echo "---"
+          echo "total live agent pods: $(kubectl get pods -A -l app=ranch-agent --no-headers | grep -cv 'Succeeded\|Failed' || true)"
+
+      # GitOps health: repo says ArgoCD auto-syncs k8s/platform/* from main,
+      # but new manifests observably don't reach the cluster (the ClusterRole
+      # above came back "created" an hour after merge). Empty Applications
+      # list, missing namespace, or an error status here names the culprit.
+      - name: ArgoCD state (is GitOps actually running?)
+        run: |
+          kubectl -n argocd get pods 2>&1 || true
+          echo "---"
+          kubectl -n argocd get applications -o wide 2>&1 || true

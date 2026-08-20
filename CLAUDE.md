@@ -23,6 +23,12 @@ files, `make migrate` runs `generate` first and then Prisma migrate. Always go t
 these rather than calling `prisma` directly: the schema is a build artifact and is
 gitignored.
 
+The generated API SDK and types have the same shape: if they or `api/swagger-spec.json`
+are missing or stale, regenerate before assuming the schema is wrong. `cd api && bun run
+build && bun run generate:swagger` produces the spec; the consoles read it during their
+own `pretypecheck` (`openapi-ts`). A bare `bun run typecheck` fails with `ENOENT ...
+swagger-spec.json` when that step has not run.
+
 Single API test (jest, `rootDir: src`, `*.spec.ts`):
 
 ```bash

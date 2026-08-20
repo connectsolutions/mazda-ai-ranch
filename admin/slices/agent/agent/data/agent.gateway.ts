@@ -7,6 +7,7 @@ import type {
   IAgentData,
   IAgentEnvVar,
   IAgentMetrics,
+  IClusterCapacityData,
   ICreateAgentData,
   IUpdateAgentData,
 } from '../domain/agent.types';
@@ -44,8 +45,8 @@ function unwrapOrThrow(res: HeyApiResult, action: string): unknown {
 
 function readAccessToken(): string | null {
   if (typeof document === 'undefined') return null;
-  const m = document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/);
-  return m ? decodeURIComponent(m[1]) : null;
+  const token = document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/)?.[1];
+  return token ? decodeURIComponent(token) : null;
 }
 
 export class AgentGateway extends BaseGateway implements IAgentGateway {
@@ -174,6 +175,13 @@ export class AgentGateway extends BaseGateway implements IAgentGateway {
     return this.execute(async () => {
       const res = await client.instance.get(`/agents/${id}/metrics`);
       return this.mapper.toMetrics(unwrapEnvelope(res.data));
+    });
+  }
+
+  capacity(): Promise<IClusterCapacityData | null> {
+    return this.execute(async () => {
+      const res = await AgentsService.getClusterCapacity();
+      return this.mapper.toCapacity(unwrapEnvelope(res.data));
     });
   }
 

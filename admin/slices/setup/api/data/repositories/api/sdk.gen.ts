@@ -70,13 +70,18 @@ import type {
   DeleteKnowledgeSourceData,
   DeleteKnowledgeSourceResponse,
   AgentControllerFindAllData,
+  AgentControllerFindAllResponse,
   AgentControllerCreateData,
   AgentControllerFindPublicData,
+  AgentControllerFindPublicResponse,
   AgentControllerStatusData,
   AgentControllerStatusResponse,
   AgentControllerStatusStreamData,
+  GetClusterCapacityData,
+  GetClusterCapacityResponse,
   AgentControllerRemoveData,
   AgentControllerFindByIdData,
+  AgentControllerFindByIdResponse,
   AgentControllerUpdateData,
   GetAgentMetricsData,
   GetAgentMetricsResponse,
@@ -195,6 +200,7 @@ import type {
   UsageControllerReportData,
   UsageControllerReportResponse,
   UsageControllerFindForCredentialData,
+  UsageControllerFindOverviewData,
   RancherControllerStatusData,
   RancherControllerEnsureTemplateData,
   UpgradeControllerStatusData,
@@ -1305,7 +1311,7 @@ export class AgentsService {
     options?: Options<AgentControllerFindAllData, ThrowOnError>,
   ) {
     return (options?.client ?? _heyApiClient).get<
-      unknown,
+      AgentControllerFindAllResponse,
       unknown,
       ThrowOnError
     >({
@@ -1341,7 +1347,7 @@ export class AgentsService {
     options?: Options<AgentControllerFindPublicData, ThrowOnError>,
   ) {
     return (options?.client ?? _heyApiClient).get<
-      unknown,
+      AgentControllerFindPublicResponse,
       unknown,
       ThrowOnError
     >({
@@ -1383,6 +1389,22 @@ export class AgentsService {
   }
 
   /**
+   * How many more agents fit on the cluster. Free schedulable CPU/memory on node-role=agents nodes divided by the fixed agent request floor (100m / 512Mi), minus agents still deploying without a pod. Cached ~15s; null when the Kubernetes API is unreachable. Admin or Owner — the only roles that can act on the number, and the response reveals node topology.
+   */
+  public static getClusterCapacity<ThrowOnError extends boolean = false>(
+    options?: Options<GetClusterCapacityData, ThrowOnError>,
+  ) {
+    return (options?.client ?? _heyApiClient).get<
+      GetClusterCapacityResponse,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/agents/capacity",
+      ...options,
+    });
+  }
+
+  /**
    * Stop and delete an agent. Pass `?wipeS3=true` to also drop every object under `agents/{id}/` — opt-in so accidental deletes don’t nuke files. Admin or Owner.
    */
   public static agentControllerRemove<ThrowOnError extends boolean = false>(
@@ -1405,7 +1427,7 @@ export class AgentsService {
     options: Options<AgentControllerFindByIdData, ThrowOnError>,
   ) {
     return (options.client ?? _heyApiClient).get<
-      unknown,
+      AgentControllerFindByIdResponse,
       unknown,
       ThrowOnError
     >({
@@ -1595,7 +1617,7 @@ export class AgentsService {
   }
 
   /**
-   * List the agent's configured channels. Reads agents/{id}/data/channels.json from S3 — the single source of truth (the runtime mutates the same file via its channel_* tools). Returns [] when the file is absent. Always fresh, no caching.
+   * List the agent's configured channels with live status. Config comes from agents/{id}/data/channels/<type>.json in S3 — the runtime's per-channel layout, mutated by its channel_* tools (falls back read-only to the pre-split data/channels.json for agents configured before the convergence). Status (connected/statusReason) comes from data/channels/status.json, written by the runtime; null = unknown. Returns [] when nothing is configured. Always fresh, no caching.
    */
   public static getAgentChannels<ThrowOnError extends boolean = false>(
     options: Options<GetAgentChannelsData, ThrowOnError>,
@@ -1611,7 +1633,7 @@ export class AgentsService {
   }
 
   /**
-   * Replace the agent's channels. Writes agents/{id}/data/channels.json — restart the agent to pick up new env vars (TELEGRAM_BOT_TOKEN etc.) injected at pod submit time. Body is the exhaustive list — anything omitted is removed. Pass [] to clear.
+   * Replace the agent's channels. Writes agents/{id}/data/channels/<type>.json (read-modify-write — the runtime-owned group registry in the same file is preserved). Body is the exhaustive list — anything omitted is tombstoned (removed: true), never deleted, so a restart can't resurrect it from stale pod env vars. Pass [] to clear. Panel-side changes reach a running agent on its next restart (env re-injection at pod submit); agent-side (chat tool) changes apply immediately.
    */
   public static setAgentChannels<ThrowOnError extends boolean = false>(
     options: Options<SetAgentChannelsData, ThrowOnError>,
@@ -2779,6 +2801,22 @@ export class UsageService {
       ThrowOnError
     >({
       url: "/llms/{id}/usage",
+      ...options,
+    });
+  }
+
+  /**
+   * Get 30-day usage across all agents with cost
+   */
+  public static usageControllerFindOverview<
+    ThrowOnError extends boolean = false,
+  >(options?: Options<UsageControllerFindOverviewData, ThrowOnError>) {
+    return (options?.client ?? _heyApiClient).get<
+      unknown,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/usage/overview",
       ...options,
     });
   }

@@ -1,1 +1,15 @@
-{}
+{
+  "list": {
+    "title": "Templates",
+    "loading": "Loading templates...",
+    "empty": "No templates available."
+  },
+  "item": {
+    "loading": "Loading template..."
+  },
+  "field": {
+    "name": "Template Name",
+    "image": "Docker Image",
+    "description": "Description"
+  }
+}

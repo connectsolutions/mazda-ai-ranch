@@ -9,8 +9,6 @@ const props = withDefaults(
   }>(),
   { showHeader: true },
 );
-
-const { t } = useI18n();
 const bridleStore = useBridleStore();
 
 // Replay persisted conversation so the chat isn't blank after a refresh.
@@ -88,8 +86,11 @@ const agentInitial = computed(() => {
       <div
         ref="scrollEl"
         class="flex-1 min-h-0 overflow-y-auto bg-linear-to-b from-muted/20 via-background to-background"
+        :class="{ 'flex': !messages.length }"
       >
-        <div class="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-6">
+        <div class="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-6"
+        :class="{ 'justify-center': !messages.length }"
+        >
           <!-- Conversation starter when no messages yet -->
           <div
             v-if="!messages.length"
@@ -101,10 +102,10 @@ const agentInitial = computed(() => {
               {{ agentInitial }}
             </div>
             <h3 class="mt-3 text-sm font-semibold">
-              {{ title ?? t('chat.agent') }}
+              {{ title ?? $t('chat.agent') }}
             </h3>
             <p class="mt-1 max-w-xs text-xs text-muted-foreground">
-              Say hello — your message will go straight to the agent runtime.
+              {{ $t('chat.starter_hint') }}
             </p>
           </div>
 
@@ -141,7 +142,7 @@ const agentInitial = computed(() => {
             class="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
           >
             <Icon name="alert-triangle" :size="14" class="mt-px shrink-0" />
-            <span>{{ t('chat.error') }}: {{ error }}</span>
+            <span>{{ $t('chat.error') }}: {{ error }}</span>
           </div>
         </div>
       </div>

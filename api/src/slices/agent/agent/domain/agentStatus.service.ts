@@ -19,9 +19,14 @@ import {
 import { IAgentGateway } from './agent.gateway';
 import { IAgentData } from './agent.types';
 import { AgentDeployService } from './agentDeploy.service';
+import { DEPLOY_GRACE_MS, isWithinDeployGrace } from './deployGrace';
 import { DeployTracker } from './deployTracker';
 import { IPodGateway } from '#/agent/pod/domain';
-import { IAgentPodStatus, PodEventTypes } from '#/agent/pod/domain/pod.types';
+import {
+  IAgentPodStatus,
+  IClusterCapacity,
+  PodEventTypes,
+} from '#/agent/pod/domain/pod.types';
 import { IBridleGateway } from '#/bridle/domain';
 
 export interface IAgentStatus {
@@ -45,6 +50,12 @@ const FAIL_WAITING_REASONS = new Set([
 ]);
 
 const LIVE_DB_STATUSES = new Set<string>(['pending', 'deploying', 'running']);
+
+// Agents that claimed a slot but whose pod K8s hasn't materialised yet —
+// right after POST /agents the DB row is 'deploying' while Argo is still
+// creating the pod. Counting them keeps GET /agents/capacity honest in that
+// window, so the UI counter drops the moment a create returns.
+const RESERVED_DB_STATUSES = new Set<string>(['pending', 'deploying']);
 
 const DRIFT_INTERVAL_MS = 30_000;
 const AUTO_RESTART_CONCURRENCY = 5;
@@ -149,6 +160,11 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
       this.deployTracker.clear(agentId);
       return;
     }
+    // Same 'stopped' exemption as the drift sweep: a reconnect from the
+    // not-yet-dead runtime of an explicitly stopped agent must not undo the
+    // operator's stop. A subsequent Start goes through deploy() → 'deploying'
+    // and re-enables this path.
+    if (agent.status === 'stopped') return;
     this.logger.log(
       `Reconciling agent ${agentId}: bridle runtime registered — marking running`,
     );
@@ -170,6 +186,30 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
       agent,
       pod: podByAgent.get(agent.id) ?? null,
     }));
+  }
+
+  async getCapacity(): Promise<IClusterCapacity | null> {
+    const cluster = await this.podGateway.getClusterCapacity();
+    if (!cluster) return null;
+
+    const [agents, pods] = await Promise.all([
+      this.agentGateway.findAll(),
+      this.podGateway.list(),
+    ]);
+    const podded = new Set(pods.map((p) => p.agentId));
+    const reserved = agents.filter(
+      (a) => RESERVED_DB_STATUSES.has(a.status) && !podded.has(a.id),
+    ).length;
+    if (reserved === 0) return cluster;
+
+    const usedAgentSlots = cluster.usedAgentSlots + reserved;
+    const freeAgentSlots = Math.max(0, cluster.freeAgentSlots - reserved);
+    return {
+      ...cluster,
+      usedAgentSlots,
+      freeAgentSlots,
+      totalAgentSlots: usedAgentSlots + freeAgentSlots,
+    };
   }
 
   stream$(): Observable<AgentStatusStreamMessage> {
@@ -232,7 +272,15 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
         // pod-missing/Failed state during a restart shouldn't override a
         // healthy runtime that's actively talking to us.
         if (this.bridleGateway.isAgentConnected(agent.id)) {
-          if (agent.status !== 'running') {
+          // 'stopped' is exempt from the resurrect: the operator explicitly
+          // stopped the agent, and the old runtime's WS can linger for a few
+          // seconds after the pod delete (forever on local dev, where there
+          // is no pod to kill). Flipping it back to 'running' here would undo
+          // the stop — and worse, once the WS finally dropped, the next sweep
+          // would find a pod-less 'running' agent and mark it FAILED. We
+          // still `continue` so a stopped-but-lingering runtime isn't drift
+          // -failed either.
+          if (agent.status !== 'running' && agent.status !== 'stopped') {
             this.logger.log(
               `Drift: agent ${agent.id} (${agent.name}) is ${agent.status} in DB but bridle has it registered — marking running`,
             );
@@ -249,13 +297,24 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
         const pod = podByAgent.get(agent.id);
         if (!pod) {
           if (LIVE_DB_STATUSES.has(agent.status) && agent.status !== 'failed') {
+            // A just-submitted deploy legitimately has no pod for ~10-30s
+            // (Argo runs cleanup-old before run-agent). Inside the grace
+            // window the absence of a pod is not evidence of failure — a
+            // healthy stop→start must never flash 'failed'. Once the window
+            // expires with no pod, THAT is the definitive startup timeout.
+            if (isWithinDeployGrace(agent)) continue;
+            const reason =
+              agent.status === 'running'
+                ? 'agent pod disappeared'
+                : `startup did not produce a running agent within ${Math.round(DEPLOY_GRACE_MS / 60_000)} minutes`;
             this.logger.warn(
-              `Drift: agent ${agent.id} (${agent.name}) is ${agent.status} in DB but no pod exists — marking failed`,
+              `Drift: agent ${agent.id} (${agent.name}) is ${agent.status} in DB but no pod exists — marking failed (${reason})`,
             );
             await this.agentGateway.updateStatus(
               agent.id,
               'failed',
               agent.workflowId ?? undefined,
+              reason,
             );
             driftFailedIds.push(agent.id);
           }
@@ -327,8 +386,15 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
     const agent = await this.agentGateway.findById(podStatus.agentId);
     if (!agent) return;
 
+    // Succeeded = the runtime exited cleanly. Legal for the runtime (it
+    // self-restarts via clean exit after channel/config edits), but terminal
+    // for pods created with restartPolicy Never: nothing revives the
+    // container, so a 'running' DB row would lie forever ("Agent offline"
+    // in chat while the badge says running). New pods use restartPolicy
+    // Always and restart in place instead of ever reaching Succeeded.
     const isFailed =
       podStatus.phase === 'Failed' ||
+      podStatus.phase === 'Succeeded' ||
       (podStatus.containerWaitingReason !== null &&
         FAIL_WAITING_REASONS.has(podStatus.containerWaitingReason));
 
@@ -344,6 +410,16 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (agent.status !== 'failed') {
+        // Human-readable cause for the UI: prefer the waiting reason
+        // (CrashLoopBackOff, ImagePullBackOff, …), then the last termination
+        // reason (OOMKilled, …), then the bare phase.
+        const reason =
+          podStatus.phase === 'Succeeded'
+            ? 'agent runtime exited — restart the agent to bring it back'
+            : (podStatus.containerWaitingReason ??
+              podStatus.lastTerminationReason ??
+              podStatus.message ??
+              `pod ${podStatus.phase}`);
         this.logger.warn(
           `Reconciling agent ${agent.id}: pod ${podStatus.podName} is ${podStatus.phase}` +
             (podStatus.containerWaitingReason
@@ -355,6 +431,7 @@ export class AgentStatusService implements OnModuleInit, OnModuleDestroy {
           agent.id,
           'failed',
           agent.workflowId ?? undefined,
+          reason,
         );
       }
       return;

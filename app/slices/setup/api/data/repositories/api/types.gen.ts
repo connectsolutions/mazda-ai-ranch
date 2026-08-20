@@ -328,6 +328,57 @@ export type AddFromArchiveResultDto = {
   jobId: string;
 };
 
+export type AgentDto = {
+  id: string;
+  name: string;
+  templateId: string;
+  llmCredentialId?: {
+    [key: string]: unknown;
+  } | null;
+  status: "pending" | "deploying" | "running" | "failed" | "stopped";
+  /**
+   * Human-readable reason accompanying status='failed' (e.g. "startup did not produce a running agent within 5 minutes", "ImagePullBackOff"). Null for all other statuses and for failures recorded before this field existed.
+   */
+  statusReason: string | null;
+  workflowId: {
+    [key: string]: unknown;
+  } | null;
+  /**
+   * When this agent was first successfully deployed. Null ⇒ the agent has never been deployed.
+   */
+  firstDeployedAt: string | null;
+  /**
+   * When the current/last deploy was started. Anchor of the server-side deploy grace window.
+   */
+  lastDeployStartedAt: string | null;
+  /**
+   * Why the current/last deploy ran: 'initial' = first-ever start, 'restart' = any subsequent deploy (restart, start after stop, config-change redeploy). Null only for agents never deployed since this field existed.
+   */
+  launchContext: "initial" | "restart";
+  config: {
+    [key: string]: unknown;
+  };
+  resources: {
+    [key: string]: unknown;
+  };
+  /**
+   * When true, the agent runtime emits prompt-debug snapshots to admin clients via the bridle hub.
+   */
+  debugEnabled: boolean;
+  /**
+   * When true, the agent is visible on the public landing page to unauthenticated visitors.
+   */
+  isPublic: boolean;
+  /**
+   * Origins (scheme + host + port) authorized to open browser WebSockets to this bot without a JWT. Only consulted when isPublic=true.
+   */
+  allowedOrigins: Array<string>;
+  knowledgeIds: Array<string>;
+  isAdmin: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AgentPodStatusDto = {
   agentId: string;
   podName: string;
@@ -343,15 +394,54 @@ export type AgentPodStatusDto = {
 
 export type AgentStatusDto = {
   /**
-   * Agent DB record (id, name, status, etc.)
+   * Agent DB record (id, name, status, launchContext, etc.)
    */
-  agent: {
-    [key: string]: unknown;
-  };
+  agent: AgentDto;
   /**
    * Live pod status; null if no pod is currently running for this agent.
    */
   pod: AgentPodStatusDto | null;
+};
+
+export type NodeCapacityDto = {
+  name: string;
+  /**
+   * Allocatable CPU minus summed pod requests, in millicores
+   */
+  freeCpuMilli: number;
+  /**
+   * Allocatable memory minus summed pod requests, in bytes
+   */
+  freeMemBytes: number;
+  /**
+   * How many more agent pods fit on this node
+   */
+  freeSlots: number;
+};
+
+export type ClusterCapacityDto = {
+  /**
+   * How many more agents can start right now, across all agent nodes
+   */
+  freeAgentSlots: number;
+  /**
+   * Agents currently holding a slot (live pods + deploying)
+   */
+  usedAgentSlots: number;
+  /**
+   * usedAgentSlots + freeAgentSlots under current cluster load
+   */
+  totalAgentSlots: number;
+  /**
+   * CPU request one agent slot reserves, in millicores
+   */
+  slotCpuMilli: number;
+  /**
+   * Memory request one agent slot reserves, in bytes
+   */
+  slotMemBytes: number;
+  nodes: Array<NodeCapacityDto>;
+  observedAt: string;
 };
 
 export type AgentPodMetricsDto = {
@@ -788,6 +878,18 @@ export type AgentChannelDto = {
    */
   type: "telegram";
   config: TelegramChannelConfigDto;
+  /**
+   * Live state reported by the runtime (data/channels/status.json). true = polling/connected, false = last start attempt failed (see statusReason), null = unknown (no status reported yet). Read-only — ignored on PUT.
+   */
+  connected?: boolean | null;
+  /**
+   * Failure reason when connected=false (e.g. an invalid token). Read-only.
+   */
+  statusReason?: string | null;
+  /**
+   * Unix ms of the last status change. Read-only.
+   */
+  statusUpdatedAt?: number | null;
 };
 
 export type SetAgentChannelsDto = {
@@ -2071,8 +2173,11 @@ export type AgentControllerFindAllData = {
 };
 
 export type AgentControllerFindAllResponses = {
-  200: unknown;
+  200: Array<AgentDto>;
 };
+
+export type AgentControllerFindAllResponse =
+  AgentControllerFindAllResponses[keyof AgentControllerFindAllResponses];
 
 export type AgentControllerCreateData = {
   body: CreateAgentDto;
@@ -2093,8 +2198,11 @@ export type AgentControllerFindPublicData = {
 };
 
 export type AgentControllerFindPublicResponses = {
-  200: unknown;
+  200: Array<AgentDto>;
 };
+
+export type AgentControllerFindPublicResponse =
+  AgentControllerFindPublicResponses[keyof AgentControllerFindPublicResponses];
 
 export type AgentControllerStatusData = {
   body?: never;
@@ -2121,6 +2229,20 @@ export type AgentControllerStatusStreamResponses = {
   200: unknown;
 };
 
+export type GetClusterCapacityData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/agents/capacity";
+};
+
+export type GetClusterCapacityResponses = {
+  200: ClusterCapacityDto;
+};
+
+export type GetClusterCapacityResponse =
+  GetClusterCapacityResponses[keyof GetClusterCapacityResponses];
+
 export type AgentControllerRemoveData = {
   body?: never;
   path: {
@@ -2146,8 +2268,11 @@ export type AgentControllerFindByIdData = {
 };
 
 export type AgentControllerFindByIdResponses = {
-  200: unknown;
+  200: AgentDto;
 };
+
+export type AgentControllerFindByIdResponse =
+  AgentControllerFindByIdResponses[keyof AgentControllerFindByIdResponses];
 
 export type AgentControllerUpdateData = {
   body: UpdateAgentDto;
@@ -3417,6 +3542,17 @@ export type UsageControllerFindForCredentialData = {
 };
 
 export type UsageControllerFindForCredentialResponses = {
+  200: unknown;
+};
+
+export type UsageControllerFindOverviewData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/usage/overview";
+};
+
+export type UsageControllerFindOverviewResponses = {
   200: unknown;
 };
 
