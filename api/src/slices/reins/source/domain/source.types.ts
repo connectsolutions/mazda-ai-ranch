@@ -47,6 +47,13 @@ export interface ISourceCounts {
   total: number;
   indexed: number;
   failed: number;
+  /**
+   * Handed to LightRAG and still moving through its pipeline: the run that
+   * submitted them stopped waiting, but nothing is wrong with them. Counted
+   * apart from the rest of `pending` so a base cannot report itself finished
+   * while a document is still being chunked.
+   */
+  processing: number;
 }
 
 /**

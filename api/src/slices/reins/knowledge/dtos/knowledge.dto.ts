@@ -20,6 +20,11 @@ export class KnowledgeDto implements IKnowledgeData {
     description: 'Sources whose last index run recorded an error',
   })
   failedCount: number;
+  @ApiProperty({
+    description:
+      'Sources handed to LightRAG that it has not finished processing. A ready knowledge with a non-zero count is searchable but not complete yet; run Index again once the pipeline drains.',
+  })
+  processingCount: number;
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
 }

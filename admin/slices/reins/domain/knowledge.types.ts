@@ -28,6 +28,8 @@ export interface IKnowledge {
   sourceCount: number;
   indexedCount: number;
   failedCount: number;
+  /** Handed to LightRAG, not finished yet. Not an error, just not done. */
+  processingCount: number;
   createdAt: string;
   updatedAt: string;
   sources?: ISource[];

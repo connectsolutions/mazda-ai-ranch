@@ -33,8 +33,9 @@ import { indexBudgetMs } from '../domain/indexBudget';
 import { SourceMapper } from './source.mapper';
 
 // LightRAG processes ingested documents in a background pipeline. How long one
-// index run waits for it comes from indexBudgetMs, which scales with the batch:
-// see the note there on why a constant cannot work.
+// index run waits for it comes from indexBudgetMs, which scales with the
+// batch's content volume: see the note there on why neither a constant nor a
+// per-document figure can work.
 const PROCESSING_POLL_INTERVAL_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
@@ -207,10 +208,14 @@ export class SourceGateway extends ISourceGateway {
       return new Map(rows.map((r) => [r.knowledgeId, r._count._all]));
     };
 
-    const [total, indexed, failed] = await Promise.all([
+    const [total, indexed, failed, processing] = await Promise.all([
       groupCount({}),
       groupCount(whereForStatus('indexed')),
       groupCount(whereForStatus('failed')),
+      // A stored handle with no `indexedAt` yet is the one state that means
+      // "LightRAG has it and is working on it". Rows never submitted have no
+      // handle, so they stay plain pending.
+      groupCount({ ...whereForStatus('pending'), lightragDocId: { not: null } }),
     ]);
 
     for (const [knowledgeId, count] of total) {
@@ -218,6 +223,7 @@ export class SourceGateway extends ISourceGateway {
         total: count,
         indexed: indexed.get(knowledgeId) ?? 0,
         failed: failed.get(knowledgeId) ?? 0,
+        processing: processing.get(knowledgeId) ?? 0,
       });
     }
     return counts;
@@ -654,7 +660,7 @@ export class SourceGateway extends ISourceGateway {
   ): Promise<void> {
     if (inFlight.size === 0) return;
 
-    const budgetMs = indexBudgetMs(inFlight.size);
+    const budgetMs = indexBudgetMs([...inFlight.values()]);
     const deadline = Date.now() + budgetMs;
 
     while (inFlight.size > 0 && Date.now() < deadline) {

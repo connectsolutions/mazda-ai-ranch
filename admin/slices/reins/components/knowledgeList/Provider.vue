@@ -101,6 +101,13 @@ async function onRemove(item: IKnowledge) {
               <span :title="`${item.indexedCount} indexed of ${item.sourceCount}`">
                 {{ item.indexedCount }} / {{ item.sourceCount }}
               </span>
+              <span
+                v-if="item.processingCount"
+                class="ml-1 text-xs text-muted-foreground"
+                :title="`${item.processingCount} still in LightRAG's pipeline - run Index again once it drains`"
+              >
+                ({{ item.processingCount }} processing)
+              </span>
               <span v-if="item.failedCount" class="ml-1 text-xs text-destructive">
                 ({{ item.failedCount }} failed)
               </span>

@@ -8,8 +8,10 @@ import {
 import { indexBudgetMs } from '../domain/indexBudget';
 
 const POLL_MS = 3000;
-// The wait now scales with the batch, so derive it rather than hardcoding.
-const TIMEOUT_MS = indexBudgetMs(1);
+// The wait now scales with the batch's content volume, so derive it rather
+// than hardcoding. These fixtures are text sources with no known size, which
+// leaves just the base plus the per-document term.
+const TIMEOUT_MS = indexBudgetMs([{ sizeBytes: null }]);
 
 function makeSource(overrides: Partial<ISourceData> = {}): ISourceData {
   return {

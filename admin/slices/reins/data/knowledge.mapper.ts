@@ -103,6 +103,7 @@ export class KnowledgeMapper {
       sourceCount: num(o.sourceCount),
       indexedCount: num(o.indexedCount),
       failedCount: num(o.failedCount),
+      processingCount: num(o.processingCount),
       createdAt: str(o.createdAt),
       updatedAt: str(o.updatedAt),
       sources: Array.isArray(o.sources) ? this.toSourceList(o.sources) : undefined,
