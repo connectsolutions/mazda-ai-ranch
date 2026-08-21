@@ -26,6 +26,12 @@ export interface IKnowledgeData extends IKnowledgeRecord {
   sourceCount: number;
   indexedCount: number;
   failedCount: number;
+  /**
+   * Sources LightRAG is still chunking. `ready` with a non-zero value here
+   * means "searchable, but not all of it yet" - without it a base that stopped
+   * waiting on a long document is indistinguishable from a finished one.
+   */
+  processingCount: number;
 }
 
 export interface ICreateKnowledgeData {

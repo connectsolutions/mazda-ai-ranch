@@ -33,8 +33,9 @@ import { indexBudgetMs } from '../domain/indexBudget';
 import { SourceMapper } from './source.mapper';
 
 // LightRAG processes ingested documents in a background pipeline. How long one
-// index run waits for it comes from indexBudgetMs, which scales with the batch:
-// see the note there on why a constant cannot work.
+// index run waits for it comes from indexBudgetMs, which scales with the
+// batch's content volume: see the note there on why neither a constant nor a
+// per-document figure can work.
 const PROCESSING_POLL_INTERVAL_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
@@ -46,7 +47,10 @@ function errorMessage(err: unknown): string {
 }
 
 type IExistingIndexCheck =
-  | { kind: 'indexed' }
+  // `docId` is the handle LightRAG confirmed as processed. The caller needs it
+  // to stamp rows that never got one: a run that stopped waiting leaves the
+  // row pending with a handle, and this is where it finally becomes indexed.
+  | { kind: 'indexed'; docId: string }
   | { kind: 'inFlight'; trackId: string }
   | { kind: 'stale' }
   | { kind: 'unknown'; error: string };
@@ -207,10 +211,17 @@ export class SourceGateway extends ISourceGateway {
       return new Map(rows.map((r) => [r.knowledgeId, r._count._all]));
     };
 
-    const [total, indexed, failed] = await Promise.all([
+    const [total, indexed, failed, processing] = await Promise.all([
       groupCount({}),
       groupCount(whereForStatus('indexed')),
       groupCount(whereForStatus('failed')),
+      // A stored handle with no `indexedAt` yet is the one state that means
+      // "LightRAG has it and is working on it". Rows never submitted have no
+      // handle, so they stay plain pending.
+      groupCount({
+        ...whereForStatus('pending'),
+        lightragDocId: { not: null },
+      }),
     ]);
 
     for (const [knowledgeId, count] of total) {
@@ -218,6 +229,7 @@ export class SourceGateway extends ISourceGateway {
         total: count,
         indexed: indexed.get(knowledgeId) ?? 0,
         failed: failed.get(knowledgeId) ?? 0,
+        processing: processing.get(knowledgeId) ?? 0,
       });
     }
     return counts;
@@ -384,10 +396,23 @@ export class SourceGateway extends ISourceGateway {
       const existing = await this.checkExistingIndex(source, known.byId);
 
       if (existing.kind === 'indexed') {
-        // Still good. A leftover error from an earlier run would keep the row
-        // red in the UI even though the content is searchable, so clear it.
-        if (source.indexError !== null) await this.clearError(source.id);
-        outcomes.set(source.id, this.indexed(source));
+        // A row that never got its stamp is the whole reason this branch
+        // writes at all. When a run stops waiting it leaves the source pending
+        // with a handle; LightRAG finishes minutes later; and every run after
+        // that recognised the document as processed but recorded nothing, so
+        // the source sat at `pending` forever and the base never reached
+        // "N of N". Stamping here is what makes the count converge.
+        // A row that is already stamped and clean needs no write - on a base
+        // of a few hundred sources that would be a few hundred pointless
+        // updates per run.
+        const needsStamp =
+          source.indexedAt === null || source.indexError !== null;
+        outcomes.set(
+          source.id,
+          needsStamp
+            ? await this.succeed(source, existing.docId)
+            : this.indexed(source),
+        );
         continue;
       }
       if (existing.kind === 'inFlight') {
@@ -446,6 +471,59 @@ export class SourceGateway extends ISourceGateway {
       );
     }
     return results;
+  }
+
+  async findUnconfirmed(): Promise<ISourceData[]> {
+    const records = await this.prisma.source.findMany({
+      where: {
+        lightragDocId: { not: null },
+        indexedAt: null,
+        indexError: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return records.map((r) => this.mapper.toEntity(r));
+  }
+
+  /**
+   * One pass over documents LightRAG already holds. Deliberately narrower than
+   * `indexSources`: it never uploads and never waits, so it is safe to run on a
+   * timer. Anything still moving is left for the next pass; anything LightRAG
+   * has lost keeps its row untouched and waits for a real index run to re-send
+   * it.
+   */
+  async confirmProcessed(
+    sources: ISourceData[],
+  ): Promise<ISourceIndexOutcome[]> {
+    if (sources.length === 0) return [];
+    const known = await this.snapshotDocuments();
+    const outcomes: ISourceIndexOutcome[] = [];
+
+    for (const source of sources) {
+      const existing = await this.checkExistingIndex(source, known.byId);
+      if (existing.kind === 'indexed') {
+        outcomes.push(await this.succeed(source, existing.docId));
+        continue;
+      }
+      if (existing.kind === 'inFlight') {
+        outcomes.push(
+          this.stillProcessing(source, 'still in LightRAG pipeline'),
+        );
+        continue;
+      }
+      // 'stale' or 'unknown'. Neither is this pass's business: re-sending a
+      // document is what the Index action is for, and an unreachable LightRAG
+      // resolves itself. Report without writing.
+      outcomes.push(
+        this.failed(
+          source,
+          existing.kind === 'unknown'
+            ? existing.error
+            : 'LightRAG no longer holds this document',
+        ),
+      );
+    }
+    return outcomes;
   }
 
   private failed(source: ISourceData, error: string): ISourceIndexOutcome {
@@ -617,7 +695,9 @@ export class SourceGateway extends ISourceGateway {
         await this.forgetDocId(source.id);
         return { kind: 'stale' };
       }
-      if (statuses.every((s) => s === 'processed')) return { kind: 'indexed' };
+      if (statuses.every((s) => s === 'processed')) {
+        return { kind: 'indexed', docId: storedId };
+      }
       if (statuses.some((s) => s === 'pending' || s === 'processing')) {
         return { kind: 'inFlight', trackId: storedId };
       }
@@ -654,7 +734,7 @@ export class SourceGateway extends ISourceGateway {
   ): Promise<void> {
     if (inFlight.size === 0) return;
 
-    const budgetMs = indexBudgetMs(inFlight.size);
+    const budgetMs = indexBudgetMs([...inFlight.values()]);
     const deadline = Date.now() + budgetMs;
 
     while (inFlight.size > 0 && Date.now() < deadline) {

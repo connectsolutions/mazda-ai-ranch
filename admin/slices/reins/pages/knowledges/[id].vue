@@ -68,10 +68,19 @@ async function handleIndex() {
   // dialog said "42 of 210" and then sent all 210, so the wording has to admit
   // that rather than quote a number it cannot guarantee.
   const total = current.value.sourceCount;
+  // Sources LightRAG is still chunking are waited on, not re-sent, so they do
+  // not belong in the "never confirmed" bucket that reads as work to redo.
+  const processing = current.value.processingCount;
+  const neverConfirmed = toIndex.value - current.value.failedCount - processing;
+  const breakdown = [
+    `${current.value.failedCount} failed earlier`,
+    ...(processing > 0 ? [`${processing} still processing`] : []),
+    `${neverConfirmed} never confirmed`,
+  ].join(', ');
   const knownWork =
     toIndex.value === 0
       ? `All ${total} source${total === 1 ? ' is' : 's are'} marked indexed, so this run may only re-verify them.`
-      : `At least ${toIndex.value} of ${total} source${total === 1 ? '' : 's'} will go through the LLM (${current.value.failedCount} failed earlier, ${toIndex.value - current.value.failedCount} never confirmed).`;
+      : `At least ${toIndex.value} of ${total} source${total === 1 ? '' : 's'} will go through the LLM (${breakdown}).`;
   const description = `${knownWork} Every source is re-checked against LightRAG, and any it no longer holds is sent again - if the LightRAG index was cleared, that means all ${total}. This costs money and can take a while on a large base.`;
 
   const ok = await confirmStore.ask({
@@ -129,6 +138,12 @@ provide('knowledge-refresh', refresh);
             Indexed
             <span class="font-medium text-foreground">{{ current.indexedCount }}</span>
             / {{ current.sourceCount }}
+          </span>
+          <span
+            v-if="current.processingCount"
+            title="LightRAG is still chunking these. Nothing is wrong - run Index again once its pipeline drains."
+          >
+            · {{ current.processingCount }} still processing
           </span>
           <span v-if="current.failedCount" class="text-destructive">
             · {{ current.failedCount }} failed

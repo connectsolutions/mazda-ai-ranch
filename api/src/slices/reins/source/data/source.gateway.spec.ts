@@ -8,8 +8,10 @@ import {
 import { indexBudgetMs } from '../domain/indexBudget';
 
 const POLL_MS = 3000;
-// The wait now scales with the batch, so derive it rather than hardcoding.
-const TIMEOUT_MS = indexBudgetMs(1);
+// The wait now scales with the batch's content volume, so derive it rather
+// than hardcoding. These fixtures are text sources with no known size, which
+// leaves just the base plus the per-document term.
+const TIMEOUT_MS = indexBudgetMs([{ sizeBytes: null }]);
 
 function makeSource(overrides: Partial<ISourceData> = {}): ISourceData {
   return {
@@ -202,6 +204,47 @@ describe('SourceGateway.indexSources', () => {
     // Otherwise a source that eventually converged stays red in the UI.
     expect(prisma.errors['src-1']).toBeNull();
     expect(prisma.docIds['src-1']).toBe('track-existing');
+  });
+
+  it('stamps a source the previous run stopped waiting for', async () => {
+    // The state a timed-out run leaves behind: a handle, no `indexedAt`, no
+    // error. Observed on a 1 MB manual that LightRAG finished 50 minutes after
+    // the run gave up - every later run recognised it as processed and wrote
+    // nothing, so the base sat at 2 of 3 forever.
+    const prisma = makePrismaStub({ 'src-1': 'track-existing' });
+    const lightrag = makeLightragStub([processed()]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    const outcomes = await gateway.indexSources([
+      makeSource({ indexed: false, indexStatus: 'pending', indexedAt: null }),
+    ]);
+
+    expect(outcomes[0].indexed).toBe(true);
+    expect(prisma.indexedAt['src-1']).toBeInstanceOf(Date);
+    expect(prisma.docIds['src-1']).toBe('track-existing');
+    // Confirming must not mean re-uploading: the copy is already in there.
+    expect(lightrag.ingestText).not.toHaveBeenCalled();
+    expect(lightrag.ingestFile).not.toHaveBeenCalled();
+  });
+
+  it('does not rewrite a row that is already stamped and clean', async () => {
+    // One pointless update per source per run is a few hundred writes on a
+    // real base, and it would also move `indexedAt` for content that has not
+    // been touched since.
+    const prisma = makePrismaStub({ 'src-1': 'track-existing' });
+    const lightrag = makeLightragStub([processed()]);
+    const gateway = makeGateway(prisma, lightrag);
+
+    await gateway.indexSources([
+      makeSource({
+        indexed: true,
+        indexStatus: 'indexed',
+        indexedAt: new Date(1000),
+        indexError: null,
+      }),
+    ]);
+
+    expect(prisma.source.update).not.toHaveBeenCalled();
   });
 
   it('leaves the source unindexed and surfaces the reason when processing fails', async () => {

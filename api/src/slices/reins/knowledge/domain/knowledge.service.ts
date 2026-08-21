@@ -17,13 +17,19 @@ import {
   IGraphData,
 } from './knowledge.types';
 import { SourceService } from '../../source/domain/source.service';
+import { ISourceCounts } from '../../source/domain/source.types';
 import { staleIndexAfterMs } from '../../source/domain/indexBudget';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-const NO_SOURCES = { total: 0, indexed: 0, failed: 0 };
+const NO_SOURCES: ISourceCounts = {
+  total: 0,
+  indexed: 0,
+  failed: 0,
+  processing: 0,
+};
 
 @Injectable()
 export class KnowledgeService implements OnModuleInit {
@@ -125,13 +131,14 @@ export class KnowledgeService implements OnModuleInit {
 
   private attachCounts(
     record: IKnowledgeRecord,
-    counts: { total: number; indexed: number; failed: number },
+    counts: ISourceCounts,
   ): IKnowledgeData {
     return {
       ...record,
       sourceCount: counts.total,
       indexedCount: counts.indexed,
       failedCount: counts.failed,
+      processingCount: counts.processing,
     };
   }
 
@@ -152,12 +159,12 @@ export class KnowledgeService implements OnModuleInit {
 
     if (k.indexStatus === 'indexing' && k.indexStartedAt) {
       const ageMs = Date.now() - k.indexStartedAt.getTime();
-      // Scaled to the base's size: a run over 200 documents legitimately takes
-      // far longer than one over a handful, and offering a restart while the
-      // first run is still waiting would set two runs fighting over the same
-      // sources.
+      // Scaled to how much text the base holds, not how many rows: a single
+      // 1 MB manual outlasts a hundred order forms, and offering a restart
+      // while the first run is still waiting would set two runs fighting over
+      // the same sources.
       const sources = await this.sources.findByKnowledge(knowledgeId);
-      if (ageMs < staleIndexAfterMs(sources.length)) {
+      if (ageMs < staleIndexAfterMs(sources)) {
         throw new Error(
           `Knowledge ${knowledgeId} already indexing (started ${Math.round(ageMs / 1000)}s ago)`,
         );
