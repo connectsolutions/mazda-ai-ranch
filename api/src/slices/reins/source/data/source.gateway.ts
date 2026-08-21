@@ -218,7 +218,10 @@ export class SourceGateway extends ISourceGateway {
       // A stored handle with no `indexedAt` yet is the one state that means
       // "LightRAG has it and is working on it". Rows never submitted have no
       // handle, so they stay plain pending.
-      groupCount({ ...whereForStatus('pending'), lightragDocId: { not: null } }),
+      groupCount({
+        ...whereForStatus('pending'),
+        lightragDocId: { not: null },
+      }),
     ]);
 
     for (const [knowledgeId, count] of total) {
@@ -468,6 +471,59 @@ export class SourceGateway extends ISourceGateway {
       );
     }
     return results;
+  }
+
+  async findUnconfirmed(): Promise<ISourceData[]> {
+    const records = await this.prisma.source.findMany({
+      where: {
+        lightragDocId: { not: null },
+        indexedAt: null,
+        indexError: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return records.map((r) => this.mapper.toEntity(r));
+  }
+
+  /**
+   * One pass over documents LightRAG already holds. Deliberately narrower than
+   * `indexSources`: it never uploads and never waits, so it is safe to run on a
+   * timer. Anything still moving is left for the next pass; anything LightRAG
+   * has lost keeps its row untouched and waits for a real index run to re-send
+   * it.
+   */
+  async confirmProcessed(
+    sources: ISourceData[],
+  ): Promise<ISourceIndexOutcome[]> {
+    if (sources.length === 0) return [];
+    const known = await this.snapshotDocuments();
+    const outcomes: ISourceIndexOutcome[] = [];
+
+    for (const source of sources) {
+      const existing = await this.checkExistingIndex(source, known.byId);
+      if (existing.kind === 'indexed') {
+        outcomes.push(await this.succeed(source, existing.docId));
+        continue;
+      }
+      if (existing.kind === 'inFlight') {
+        outcomes.push(
+          this.stillProcessing(source, 'still in LightRAG pipeline'),
+        );
+        continue;
+      }
+      // 'stale' or 'unknown'. Neither is this pass's business: re-sending a
+      // document is what the Index action is for, and an unreachable LightRAG
+      // resolves itself. Report without writing.
+      outcomes.push(
+        this.failed(
+          source,
+          existing.kind === 'unknown'
+            ? existing.error
+            : 'LightRAG no longer holds this document',
+        ),
+      );
+    }
+    return outcomes;
   }
 
   private failed(source: ISourceData, error: string): ISourceIndexOutcome {

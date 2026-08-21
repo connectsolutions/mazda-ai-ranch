@@ -3,6 +3,10 @@ import { indexBudgetMs, staleIndexAfterMs } from './indexBudget';
 const MINUTE = 60 * 1000;
 const MB = 1024 * 1024;
 
+// Array(n).fill(x) types as any[], which the lint rules reject on spread.
+const sized = (count: number, bytes: number): number[] =>
+  Array.from({ length: count }, () => bytes);
+
 const docs = (...sizes: (number | null)[]): { sizeBytes: number | null }[] =>
   sizes.map((sizeBytes) => ({ sizeBytes }));
 
@@ -18,13 +22,13 @@ describe('indexBudgetMs', () => {
     // roughly 45 minutes of extraction plus merging. Counting documents gave
     // it 30 seconds.
     const oneBigFile = indexBudgetMs(docs(1 * MB));
-    const manySmallFiles = indexBudgetMs(docs(...Array(20).fill(1024)));
+    const manySmallFiles = indexBudgetMs(docs(...sized(20, 1024)));
     expect(oneBigFile).toBeGreaterThan(45 * MINUTE);
     expect(oneBigFile).toBeGreaterThan(manySmallFiles);
   });
 
   it('still pays a per-document cost, so many tiny files are not free', () => {
-    expect(indexBudgetMs(docs(...Array(20).fill(1024)))).toBeGreaterThan(
+    expect(indexBudgetMs(docs(...sized(20, 1024)))).toBeGreaterThan(
       indexBudgetMs(docs(1024)),
     );
   });
@@ -34,9 +38,7 @@ describe('indexBudgetMs', () => {
   });
 
   it('caps the wait so a runaway batch cannot block a run forever', () => {
-    expect(indexBudgetMs(docs(...Array(500).fill(10 * MB)))).toBe(
-      4 * 60 * MINUTE,
-    );
+    expect(indexBudgetMs(docs(...sized(500, 10 * MB)))).toBe(4 * 60 * MINUTE);
   });
 
   it('handles an empty batch and negative sizes without going negative', () => {
@@ -51,8 +53,8 @@ describe('staleIndexAfterMs', () => {
       [],
       docs(1024),
       docs(1 * MB),
-      docs(...Array(50).fill(512 * 1024)),
-      docs(...Array(500).fill(10 * MB)),
+      docs(...sized(50, 512 * 1024)),
+      docs(...sized(500, 10 * MB)),
     ];
     for (const batch of batches) {
       expect(staleIndexAfterMs(batch)).toBeGreaterThan(indexBudgetMs(batch));

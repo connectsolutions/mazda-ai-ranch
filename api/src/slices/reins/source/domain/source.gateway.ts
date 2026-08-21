@@ -40,6 +40,19 @@ export abstract class ISourceGateway {
   abstract readContent(source: ISourceData): Promise<ISourceContent>;
 
   abstract indexSources(sources: ISourceData[]): Promise<ISourceIndexOutcome[]>;
+  /**
+   * Sources handed to LightRAG that nothing has confirmed yet, across every
+   * knowledge. These are what a reconcile pass has to look at.
+   */
+  abstract findUnconfirmed(): Promise<ISourceData[]>;
+  /**
+   * Ask LightRAG about each source's stored handle once and write down what it
+   * says. Unlike `indexSources` this never uploads and never waits: a document
+   * still in the pipeline is simply left for the next pass.
+   */
+  abstract confirmProcessed(
+    sources: ISourceData[],
+  ): Promise<ISourceIndexOutcome[]>;
   abstract removeFromIndex(source: ISourceData): Promise<void>;
   abstract removeAllByKnowledge(knowledgeId: string): Promise<void>;
 }

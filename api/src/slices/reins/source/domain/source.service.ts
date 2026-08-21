@@ -317,6 +317,14 @@ export class SourceService {
     return this.gateway.indexSources(sources);
   }
 
+  findUnconfirmed(): Promise<ISourceData[]> {
+    return this.gateway.findUnconfirmed();
+  }
+
+  confirmProcessed(sources: ISourceData[]): Promise<ISourceIndexOutcome[]> {
+    return this.gateway.confirmProcessed(sources);
+  }
+
   /**
    * Walk a sitemap, optionally filter by URL prefix, then create one
    * url-type Source per discovered page. Indexing into LightRAG happens
