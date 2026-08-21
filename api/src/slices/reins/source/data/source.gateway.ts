@@ -47,7 +47,10 @@ function errorMessage(err: unknown): string {
 }
 
 type IExistingIndexCheck =
-  | { kind: 'indexed' }
+  // `docId` is the handle LightRAG confirmed as processed. The caller needs it
+  // to stamp rows that never got one: a run that stopped waiting leaves the
+  // row pending with a handle, and this is where it finally becomes indexed.
+  | { kind: 'indexed'; docId: string }
   | { kind: 'inFlight'; trackId: string }
   | { kind: 'stale' }
   | { kind: 'unknown'; error: string };
@@ -390,10 +393,23 @@ export class SourceGateway extends ISourceGateway {
       const existing = await this.checkExistingIndex(source, known.byId);
 
       if (existing.kind === 'indexed') {
-        // Still good. A leftover error from an earlier run would keep the row
-        // red in the UI even though the content is searchable, so clear it.
-        if (source.indexError !== null) await this.clearError(source.id);
-        outcomes.set(source.id, this.indexed(source));
+        // A row that never got its stamp is the whole reason this branch
+        // writes at all. When a run stops waiting it leaves the source pending
+        // with a handle; LightRAG finishes minutes later; and every run after
+        // that recognised the document as processed but recorded nothing, so
+        // the source sat at `pending` forever and the base never reached
+        // "N of N". Stamping here is what makes the count converge.
+        // A row that is already stamped and clean needs no write - on a base
+        // of a few hundred sources that would be a few hundred pointless
+        // updates per run.
+        const needsStamp =
+          source.indexedAt === null || source.indexError !== null;
+        outcomes.set(
+          source.id,
+          needsStamp
+            ? await this.succeed(source, existing.docId)
+            : this.indexed(source),
+        );
         continue;
       }
       if (existing.kind === 'inFlight') {
@@ -623,7 +639,9 @@ export class SourceGateway extends ISourceGateway {
         await this.forgetDocId(source.id);
         return { kind: 'stale' };
       }
-      if (statuses.every((s) => s === 'processed')) return { kind: 'indexed' };
+      if (statuses.every((s) => s === 'processed')) {
+        return { kind: 'indexed', docId: storedId };
+      }
       if (statuses.some((s) => s === 'pending' || s === 'processing')) {
         return { kind: 'inFlight', trackId: storedId };
       }
